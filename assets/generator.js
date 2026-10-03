@@ -93,6 +93,12 @@ export const ROS_MESSAGES = {
     ["position.x", "0.0"], ["position.y", "0.0"], ["position.z", "0.0"],
     ["orientation.x", "0.0"], ["orientation.y", "0.0"], ["orientation.z", "0.0"], ["orientation.w", "1.0"],
   ],
+  "sensor_msgs/msg/Imu": [
+    ["header.frame_id", '"imu_link"'],
+    ["orientation.x", "0.0"], ["orientation.y", "0.0"], ["orientation.z", "0.0"], ["orientation.w", "1.0"],
+    ["angular_velocity.x", "0.0"], ["angular_velocity.y", "0.0"], ["angular_velocity.z", "0.0"],
+    ["linear_acceleration.x", "0.0"], ["linear_acceleration.y", "0.0"], ["linear_acceleration.z", "0.0"],
+  ],
   "sensor_msgs/msg/JointState": [["name", "[]"], ["position", "[]"], ["velocity", "[]"], ["effort", "[]"]],
 };
 export const CUSTOM_MESSAGE = "custom";
@@ -169,6 +175,26 @@ export function normalizeProject(project) {
     return node;
   });
   return out;
+}
+
+// Clean a name while the user types: no spaces or symbols.
+//   "attribute": angular velocity -> angular_velocity (first letter lowercase)
+//   "node":      imu publisher    -> ImuPublisher
+//   "extension": my ros2.imu nodes -> my_ros2.imu_nodes
+//   "topic":     /my topic        -> /my_topic
+export function sanitizeName(kind, text) {
+  let v = String(text ?? "");
+  if (kind === "node") {
+    v = v.replace(/[^A-Za-z0-9\s_-]/g, "").replace(/[\s_-]+([A-Za-z0-9])/g, (_, c) => c.toUpperCase()).replace(/[\s_-]+/g, "");
+    return v.charAt(0).toUpperCase() + v.slice(1);
+  }
+  if (kind === "attribute") {
+    v = v.replace(/\s+/g, "_").replace(/[^A-Za-z0-9_]/g, "");
+    return v.charAt(0).toLowerCase() + v.slice(1);
+  }
+  if (kind === "extension") return v.replace(/\s+/g, "_").replace(/[^A-Za-z0-9_.]/g, "");
+  if (kind === "topic") return v.replace(/\s+/g, "_").replace(/[^A-Za-z0-9_/~{}]/g, "");
+  return v;
 }
 
 export function splitWords(name) {
@@ -310,7 +336,7 @@ export function validateProject(project) {
       for (const attr of list) {
         const where = `Node "${label}" ${side} "${attr.name || "?"}"`;
         if (!/^[a-z][A-Za-z0-9_]*$/.test(attr.name || ""))
-          errors.push(`${where}: name must start with a lowercase letter (camelCase).`);
+          errors.push(`${where}: name must start with a lowercase letter and use only letters, digits and _ (e.g. angular_velocity).`);
         else if (PY_KEYWORDS.has(attr.name)) errors.push(`${where}: "${attr.name}" is a Python keyword.`);
         if (names.has(attr.name)) {
           const auto = list.find((a) => a.name === attr.name && a.auto);
@@ -458,7 +484,9 @@ function placeholder(type) {
 }
 
 function variableName(name, taken) {
-  let v = RESERVED_LOCALS.has(name) ? `${name}_value` : name;
+  let v = String(name || "value").replace(/[^A-Za-z0-9_]/g, "_");
+  if (/^[0-9]/.test(v)) v = `_${v}`;
+  if (RESERVED_LOCALS.has(v) || PY_KEYWORDS.has(v)) v = `${v}_value`;
   while (taken.has(v)) v = `${v}_out`;
   taken.add(v);
   return v;

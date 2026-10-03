@@ -7,6 +7,7 @@
 // check real results, including a ROS 2 publisher -> subscriber round trip.
 
 import { mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import assert from "node:assert/strict";
 import * as G from "../assets/generator.js";
@@ -78,6 +79,18 @@ src = G.renameInSource(src, "node", "ABC", "Adder");
 assert.ok(src.includes("class OgnAdder:") && src.includes("OgnAdderInternalState") && src.includes("OgnAdderDatabase"));
 console.log("renames: attribute and class renames applied to user code");
 
+// 4b. Names are cleaned while typing; template variables are always valid Python
+assert.equal(G.sanitizeName("attribute", "angular velocity vector"), "angular_velocity_vector");
+assert.equal(G.sanitizeName("attribute", "Linear Accel"), "linear_Accel");
+assert.equal(G.sanitizeName("node", "imu publisher"), "ImuPublisher");
+assert.equal(G.sanitizeName("extension", "my ros2.imu"), "my_ros2.imu");
+assert.equal(G.sanitizeName("topic", "/my topic"), "/my_topic");
+const messy = { ...G.emptyNode("Messy"), inputs: [{ name: "bad name", type: "double", default: "0" }, { name: "class", type: "double", default: "0" }] };
+const messyPy = G.pythonTemplate({ ...project, nodes: [messy] }, messy);
+assert.ok(messyPy.includes("bad_name = db.inputs.bad name") === true, "variable is a valid identifier even if the .ogn name is not");
+assert.ok(messyPy.includes("class_value = db.inputs.class"));
+console.log("names: sanitizer and safe template variables OK");
+
 // 5. User-edited nodes for the Isaac Sim run
 const math = project.nodes.find((n) => n.name === "MathOperation");
 math.pythonSource = edit(G.pythonTemplate(project, math), "            result = 0.0", "            result = a * b");
@@ -99,6 +112,34 @@ sub.pythonSource = edit(
   "            received = msg.data if msg is not None else -1.0"
 );
 project.nodes.push(sub);
+
+// IMU publisher with underscore attribute names (built-in sensor_msgs/msg/Imu) + a matching subscriber
+const imuPub = {
+  ...G.emptyNode("ImuPublisher"),
+  uiName: "IMU Publisher",
+  action: true,
+  ros: { ...G.defaultRos(), enabled: true, role: "publisher", msgType: "sensor_msgs/msg/Imu", topic: "/builder_test/imu" },
+  inputs: [
+    { name: "angular_velocity_vector", uiName: "", type: "vectord[3]", default: "[0.0, 0.0, 0.0]", description: "" },
+    { name: "linear_acceleration_vector", uiName: "", type: "vectord[3]", default: "[0.0, 0.0, 0.0]", description: "" },
+    { name: "orientation", uiName: "", type: "quatd[4]", default: "[0.0, 0.0, 0.0, 1.0]", description: "" },
+  ],
+};
+let imuSrc = G.pythonTemplate(project, imuPub);
+for (const [from, to] of [
+  ["msg.angular_velocity.z = 0.0", "msg.angular_velocity.z = float(angular_velocity_vector[2])"],
+  ["msg.linear_acceleration.x = 0.0", "msg.linear_acceleration.x = float(linear_acceleration_vector[0])"],
+  ["msg.orientation.w = 1.0", "msg.orientation.w = float(orientation[3])"],
+]) imuSrc = edit(imuSrc, `            ${from}`, `            ${to}`);
+imuPub.pythonSource = imuSrc;
+const imuSub = {
+  ...G.emptyNode("ImuSubscriber"),
+  action: true,
+  ros: { ...G.defaultRos(), enabled: true, role: "subscriber", msgType: "sensor_msgs/msg/Imu", topic: "/builder_test/imu" },
+  outputs: [{ name: "angular_z", uiName: "", type: "double", default: "", description: "" }],
+};
+imuSub.pythonSource = edit(G.pythonTemplate(project, imuSub), "            angular_z = 0.0", "            angular_z = msg.angular_velocity.z if msg is not None else -1.0");
+project.nodes.push(imuPub, imuSub);
 result = G.validateProject(project);
 assert.deepEqual(result.errors, []);
 
@@ -113,6 +154,11 @@ assert.ok(files.find((f) => f.path.endsWith("extension.toml")).content.includes(
 assert.ok(files.every((f) => f.owner === "builder" || f.owner === "user"));
 assert.ok(!files.find((f) => f.path.endsWith(G.PROJECT_FILE)).content.includes("result = a * b"), "project file has no code copies");
 console.log(`wrote ${files.length} files to ${outDir}/${project.extension.name}`);
+
+// Every generated .py must be valid Python
+const pyFiles = files.filter((f) => f.path.endsWith(".py")).map((f) => join(outDir, f.path));
+execFileSync("python3", ["-c", "import sys, ast\nfor p in sys.argv[1:]: ast.parse(open(p).read(), p)", ...pyFiles]);
+console.log(`python: ${pyFiles.length} generated .py files parse`);
 
 // 7. Re-open without the project file: edited .py kept verbatim, untouched templates stay templates, ROS detected
 const textFiles = {};

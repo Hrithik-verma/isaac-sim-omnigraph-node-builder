@@ -423,3 +423,18 @@ body.has-fullscreen { overflow: hidden; }
   .chip { padding: 6px 10px; }
   .file-tree li { padding: 7px 8px; }
 }
+
+/* ---------- Red field error pop-up ---------- */
+.field-error {
+  position: absolute; z-index: 90;
+  background: #dc2626; color: #fff;
+  font: 500 12.5px/1.4 var(--sans);
+  padding: 7px 10px; border-radius: 7px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .35);
+  pointer-events: none;
+}
+.field-error::before {
+  content: ""; position: absolute; top: -6px; left: var(--arrow-left, 16px);
+  border: 6px solid transparent; border-top: 0; border-bottom-color: #dc2626;
+}
+input.flash { border-color: #dc2626 !important; box-shadow: 0 0 0 3px rgba(220, 38, 38, .25); }

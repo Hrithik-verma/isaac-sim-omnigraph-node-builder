@@ -53,7 +53,7 @@ def fire(graph, impulse_path, times=1):
 types = sorted(t for t in og.get_registered_nodes() if t.startswith(ext_name + "."))
 expected = {f"{ext_name}.{n}" for n in
             ["MathOperation", "VectorOperation", "ActionNode", "BranchNode", "RosPublisher", "RosSubscriber",
-             "MyNode", "FloatSubscriber"]}
+             "MyNode", "FloatSubscriber", "ImuPublisher", "ImuSubscriber"]}
 check("all node types registered", expected <= set(types), str(types))
 
 # Data nodes: a user-edited node and untouched templates
@@ -108,23 +108,33 @@ if with_ros:
                 ("pub", f"{ext_name}.RosPublisher"),
                 ("sub", f"{ext_name}.FloatSubscriber"),
                 ("twist", f"{ext_name}.RosSubscriber"),
+                ("imuPub", f"{ext_name}.ImuPublisher"),
+                ("imuSub", f"{ext_name}.ImuSubscriber"),
             ],
             keys.CONNECT: [
                 ("impulse.outputs:execOut", "pub.inputs:execIn"),
                 ("impulse.outputs:execOut", "sub.inputs:execIn"),
                 ("impulse.outputs:execOut", "twist.inputs:execIn"),
+                ("impulse.outputs:execOut", "imuPub.inputs:execIn"),
+                ("impulse.outputs:execOut", "imuSub.inputs:execIn"),
             ],
-            keys.SET_VALUES: [("impulse.inputs:onlyPlayback", False), ("pub.inputs:value", 2.5)],
+            keys.SET_VALUES: [
+                ("impulse.inputs:onlyPlayback", False),
+                ("pub.inputs:value", 2.5),
+                ("imuPub.inputs:angular_velocity_vector", [0.0, 0.0, 0.75]),
+            ],
         },
     )
     received = None
     for i in range(120):
         fire(rgraph, "/RosGraph/impulse.state:enableImpulse")
         received = out("/RosGraph/sub.outputs:received")
-        if received == 2.5:
+        imu_z = out("/RosGraph/imuSub.outputs:angular_z")
+        if received == 2.5 and imu_z == 0.75:
             break
         time.sleep(0.05)
     check("ROS 2 publisher -> subscriber round trip", received == 2.5, f"received={received} after {i + 1} ticks")
+    check("ROS 2 sensor_msgs/Imu round trip (underscore attribute names)", imu_z == 0.75, f"angular_velocity.z={imu_z}")
     check("template RosSubscriber (Twist) runs", og.Controller.node("/RosGraph/twist").get_compute_count() > 0,
           f"linearX={out('/RosGraph/twist.outputs:linearX')}")
     # Deleting the OmniGraph nodes must destroy their ROS 2 nodes (release() -> cleanup_ros()).
@@ -133,10 +143,10 @@ if with_ros:
     probe = rclpy.create_node("builder_test_probe")
 
     def generated_ros_nodes():
-        return [n for n in probe.get_node_names() if n.startswith(("og_ros_publisher", "og_float_subscriber", "og_ros_subscriber"))]
+        return [n for n in probe.get_node_names() if n.startswith(("og_ros_publisher", "og_float_subscriber", "og_ros_subscriber", "og_imu_"))]
 
     before = generated_ros_nodes()
-    og.Controller.edit("/RosGraph", {keys.DELETE_NODES: ["pub", "sub", "twist"]})
+    og.Controller.edit("/RosGraph", {keys.DELETE_NODES: ["pub", "sub", "twist", "imuPub", "imuSub"]})
     for _ in range(40):
         app.update()
         if not generated_ros_nodes():
@@ -144,7 +154,7 @@ if with_ros:
         time.sleep(0.05)
     after = generated_ros_nodes()
     probe.destroy_node()
-    check("deleting nodes destroys their ROS 2 nodes", len(before) == 3 and not after, f"before={len(before)} after={after}")
+    check("deleting nodes destroys their ROS 2 nodes", len(before) == 5 and not after, f"before={len(before)} after={after}")
 
 else:
     # Without a usable rclpy the ROS nodes must still load and explain what to do when they run.

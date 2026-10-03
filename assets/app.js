@@ -36,6 +36,125 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+// ---------------------------------------------------------------------------
+// Red pop-up under a field explaining why the input was changed or is not allowed
+
+let errorBubble = null;
+let errorTimer = null;
+let errorType = null; // "changed": we altered the input; "problem": still not allowed
+
+function showFieldError(input, message, type = "changed") {
+  errorType = type;
+  if (!errorBubble) {
+    errorBubble = el("div", { class: "field-error", role: "alert" });
+    document.body.append(errorBubble);
+  }
+  errorBubble.textContent = message;
+  errorBubble.hidden = false;
+  const r = input.getBoundingClientRect();
+  const width = Math.min(320, window.innerWidth - 32);
+  errorBubble.style.maxWidth = `${width}px`;
+  errorBubble.style.left = `${window.scrollX + Math.max(16, Math.min(r.left, window.innerWidth - width - 16))}px`;
+  errorBubble.style.top = `${window.scrollY + r.bottom + 8}px`;
+  errorBubble.style.setProperty("--arrow-left", `${Math.max(12, Math.min(r.left + 16, window.innerWidth - 16) - Math.max(16, Math.min(r.left, window.innerWidth - width - 16)))}px`);
+  input.classList.add("flash");
+  clearTimeout(errorTimer);
+  errorTimer = setTimeout(hideFieldError, 3500);
+  input.addEventListener("blur", hideFieldError, { once: true });
+}
+
+function hideFieldError() {
+  clearTimeout(errorTimer);
+  if (errorBubble) errorBubble.hidden = true;
+  document.querySelectorAll("input.flash").forEach((i) => i.classList.remove("flash"));
+}
+
+const KIND_ALLOWED = {
+  attribute: /[A-Za-z0-9_]/,
+  node: /[A-Za-z0-9]/,
+  extension: /[A-Za-z0-9_.]/,
+  topic: /[A-Za-z0-9_/~{}]/,
+};
+const KIND_LABEL = { attribute: "input/output names", node: "node names", extension: "the extension name", topic: "topic names" };
+const KIND_EXAMPLE = { attribute: "angular_velocity", extension: "my_robot.nodes", topic: "/robot/imu_data" };
+
+// Why sanitizeName changed the text.
+function explainChange(kind, before, after) {
+  if (/\s/.test(before)) {
+    return kind === "node"
+      ? "Spaces aren't allowed in node names. The next word starts with a capital letter instead (MyNode)."
+      : `Spaces aren't allowed in ${KIND_LABEL[kind]}. They are replaced with _ (${KIND_EXAMPLE[kind]}).`;
+  }
+  const removed = [...new Set([...before].filter((c) => !KIND_ALLOWED[kind].test(c)))];
+  if (removed.length) {
+    return kind === "node" && removed.every((c) => c === "_" || c === "-")
+      ? "Node names can't contain _ or -. The next word starts with a capital letter instead (MyNode)."
+      : `Not allowed in ${KIND_LABEL[kind]}: ${removed.join(" ")}  Use letters, numbers${kind === "node" ? "" : " and _"}.`;
+  }
+  if (kind === "attribute") return "Input/output names start with a lowercase letter.";
+  if (kind === "node") return "Node names start with a capital letter.";
+  return `Changed to "${after}"`;
+}
+
+const PY_KEYWORDS = new Set(
+  ("False None True and as assert async await break class continue def del elif else except finally for from global if " +
+    "import in is lambda nonlocal not or pass raise return try while with yield").split(" ")
+);
+
+// Problems sanitizing cannot fix (e.g. starts with a digit, Python keyword).
+function remainingProblem(kind, value) {
+  if (!value) return null;
+  if (kind === "attribute") {
+    if (!/^[a-z]/.test(value)) return "Input/output names must start with a letter";
+    if (PY_KEYWORDS.has(value)) return `"${value}" is a Python keyword and can't be a name`;
+  }
+  if (kind === "node" && !/^[A-Z]/.test(value)) return "Node names must start with a letter";
+  if (kind === "extension") {
+    const bad = value.split(".").find((seg) => seg && (!/^[A-Za-z_]/.test(seg) || PY_KEYWORDS.has(seg)));
+    if (bad !== undefined) return `"${bad}": each part of the extension name must start with a letter and not be a Python keyword`;
+  }
+  return null;
+}
+
+// Clean a name field in place while typing (spaces -> "_" etc.), keeping the cursor where it was.
+// Shows the red pop-up when something was changed or is still not allowed.
+function sanitizeInput(input, kind) {
+  let before = input.value;
+  // Node names: a space/_/- typed live is removed at once, so capitalise the letter typed after it.
+  if (kind === "node" && input.dataset.capNext === "1") {
+    const caret = input.selectionStart ?? before.length;
+    const typed = before.charAt(caret - 1);
+    if (/[a-z]/.test(typed)) before = before.slice(0, caret - 1) + typed.toUpperCase() + before.slice(caret);
+    if (typed && !/[\s_-]/.test(typed)) delete input.dataset.capNext;
+  }
+  if (kind === "node") {
+    const caret = input.selectionStart ?? before.length;
+    if (/[\s_-]/.test(before.charAt(caret - 1)) && caret === before.length) input.dataset.capNext = "1";
+  }
+  const after = G.sanitizeName(kind, before);
+  if (after === before) {
+    if (input.value !== after) {
+      const caret = input.selectionStart ?? after.length;
+      input.value = after;
+      input.setSelectionRange(caret, caret);
+    }
+    const problem = remainingProblem(kind, after);
+    if (problem) showFieldError(input, problem, "problem");
+    else if (errorType === "problem" && errorBubble && !errorBubble.hidden) hideFieldError(); // fixed now
+    return after;
+  }
+  showFieldError(input, explainChange(kind, before, after));
+  const caret = input.selectionStart ?? before.length;
+  const newCaret = G.sanitizeName(kind, before.slice(0, caret)).length;
+  input.value = after;
+  try {
+    input.setSelectionRange(newCaret, newCaret);
+  } catch {
+    /* some input types do not support selection */
+  }
+  return after;
+}
+
 function esc(text) {
   return String(text ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
@@ -144,6 +263,8 @@ const EXT_FIELDS = {
 function bindExtensionFields() {
   for (const [id, key] of Object.entries(EXT_FIELDS)) {
     $(`#${id}`).addEventListener("input", (e) => {
+      if (key === "name") sanitizeInput(e.target, "extension");
+      else if (key === "nodeCategory") sanitizeInput(e.target, "attribute");
       project.extension[key] = e.target.value.trim() === e.target.value ? e.target.value : e.target.value.trimStart();
       refresh();
     });
@@ -251,7 +372,7 @@ function renderEditor() {
   nameInput.addEventListener("input", () => {
     const oldName = node.name;
     const oldAuto = G.splitWords(oldName);
-    node.name = nameInput.value.trim();
+    node.name = sanitizeInput(nameInput, "node");
     if (node.pythonSource && /^[A-Z][A-Za-z0-9]*$/.test(oldName) && /^[A-Z][A-Za-z0-9]*$/.test(node.name))
       node.pythonSource = G.renameInSource(node.pythonSource, "node", oldName, node.name);
     if (!node.uiName || node.uiName === oldAuto) {
@@ -362,7 +483,7 @@ function rosSection(node) {
   });
   const topic = el("input", { value: ros.topic, spellcheck: "false", placeholder: "/my_topic" });
   topic.addEventListener("input", () => {
-    ros.topic = topic.value.trim();
+    ros.topic = sanitizeInput(topic, "topic");
     refresh();
   });
   const grid = el(
@@ -464,7 +585,7 @@ function attrRow(node, side, attr, index) {
   const isInput = side === "inputs";
   const list = node[side];
   const pin = el("span", { class: `pin ${attr.type === "execution" ? "exec" : ""}`, style: `background:${typeColor(attr.type)}` });
-  const name = el("input", { class: "a-name", value: attr.name, spellcheck: "false", autocomplete: "off", placeholder: "name", title: "Attribute name (camelCase), used as db." + side + ".<name>" });
+  const name = el("input", { class: "a-name", value: attr.name, spellcheck: "false", autocomplete: "off", placeholder: "name", title: "Attribute name, used as db." + side + ".<name>. Spaces become _" });
   const type = typeSelect(attr.type);
   const info = () => G.typeInfo(attr.type) || {};
   const def = el("input", { class: "a-def", value: isInput ? attr.default : "", spellcheck: "false", placeholder: isInput ? "default" : "output", title: "Default value" });
@@ -481,7 +602,7 @@ function attrRow(node, side, attr, index) {
 
   name.addEventListener("input", () => {
     const oldName = attr.name;
-    attr.name = name.value.trim();
+    attr.name = sanitizeInput(name, "attribute");
     // Keep the user's own code in step with the rename.
     if (node.pythonSource && /^[a-z][A-Za-z0-9_]*$/.test(oldName) && /^[a-z][A-Za-z0-9_]*$/.test(attr.name))
       node.pythonSource = G.renameInSource(node.pythonSource, side, oldName, attr.name);
