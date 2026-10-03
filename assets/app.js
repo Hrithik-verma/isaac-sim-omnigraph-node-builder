@@ -500,6 +500,22 @@ function rosSection(node) {
       refresh();
     });
     grid.append(field("Custom type", custom, "package/msg/Type"));
+    const def = el("textarea", {
+      class: "msg-def",
+      rows: "6",
+      spellcheck: "false",
+      placeholder: "# Optional: paste your .msg file to list its fields in the template\nstd_msgs/Header header\ngeometry_msgs/Vector3 angular_velocity\nfloat64 temperature",
+    });
+    def.value = ros.msgDefinition || "";
+    def.addEventListener("input", () => {
+      ros.msgDefinition = def.value;
+      const count = G.parseMsgDefinition(def.value).length;
+      fieldsNote.textContent = def.value.trim() ? `${count} field${count === 1 ? "" : "s"} found` : "";
+      refresh();
+    });
+    const count = G.parseMsgDefinition(ros.msgDefinition).length;
+    const fieldsNote = el("em", { text: ros.msgDefinition?.trim() ? `${count} field${count === 1 ? "" : "s"} found` : "" });
+    grid.append(el("label", { class: "field wide" }, el("span", {}, "Message definition (.msg) ", fieldsNote), def));
   }
   return el(
     "div",

@@ -53,7 +53,7 @@ def fire(graph, impulse_path, times=1):
 types = sorted(t for t in og.get_registered_nodes() if t.startswith(ext_name + "."))
 expected = {f"{ext_name}.{n}" for n in
             ["MathOperation", "VectorOperation", "ActionNode", "BranchNode", "RosPublisher", "RosSubscriber",
-             "MyNode", "FloatSubscriber", "ImuPublisher", "ImuSubscriber"]}
+             "MyNode", "FloatSubscriber", "ImuPublisher", "ImuSubscriber", "CustomMsgPublisher"]}
 check("all node types registered", expected <= set(types), str(types))
 
 # Data nodes: a user-edited node and untouched templates
@@ -137,6 +137,20 @@ if with_ros:
     check("ROS 2 sensor_msgs/Imu round trip (underscore attribute names)", imu_z == 0.75, f"angular_velocity.z={imu_z}")
     check("template RosSubscriber (Twist) runs", og.Controller.node("/RosGraph/twist").get_compute_count() > 0,
           f"linearX={out('/RosGraph/twist.outputs:linearX')}")
+    # A custom message package that is not installed: the node loads and says what is missing.
+    (cgraph, _, _, _) = og.Controller.edit(
+        {"graph_path": "/CustomGraph", "evaluator_name": "execution"},
+        {
+            keys.CREATE_NODES: [("impulse", "omni.graph.action.OnImpulseEvent"), ("pub", f"{ext_name}.CustomMsgPublisher")],
+            keys.CONNECT: [("impulse.outputs:execOut", "pub.inputs:execIn")],
+            keys.SET_VALUES: [("impulse.inputs:onlyPlayback", False)],
+        },
+    )
+    og.Controller.set(og.Controller.attribute("/CustomGraph/impulse.state:enableImpulse"), True)
+    og.Controller.evaluate_sync(cgraph)
+    cmsg = og.Controller.node("/CustomGraph/pub").get_compute_messages(og.Severity.ERROR)
+    check("missing custom message package explained", any("Message package 'builder_test_msgs'" in m for m in cmsg), str(cmsg)[:150])
+
     # Deleting the OmniGraph nodes must destroy their ROS 2 nodes (release() -> cleanup_ros()).
     import rclpy
 

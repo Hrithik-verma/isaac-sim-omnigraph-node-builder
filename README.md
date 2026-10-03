@@ -21,7 +21,8 @@ about it and never overwrites your code. Isaac Sim loads it directly: no premake
   *Save to folder* never overwrites a `.py` you changed.
 - **Action Graph option** adds Exec In / Exec Out pins so events (On Playback Tick, On Impulse...) trigger your node
 - **ROS 2 option**: publisher or subscriber with a Topic Name input, message type (std_msgs, geometry_msgs,
-  sensor_msgs or custom) and the rclpy setup/cleanup code, using Isaac Sim's ROS 2 bridge
+  sensor_msgs incl. Imu, or custom) and the rclpy setup/cleanup code, using Isaac Sim's ROS 2 bridge.
+  For a custom type, paste its `.msg` definition and the template lists every field.
 - Live preview of the node and its Property panel, plus every generated file
 - Several nodes per extension; starting layouts for math, vector, action, branch, ROS 2 publisher / subscriber
 - **Download .zip** (any browser) or **Save to folder** (Chrome / Edge / Opera)
@@ -53,6 +54,12 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$ISAAC/exts/isaacsim.ros2.core/humble/li
 ```
 
 If ROS 2 is not available the node still loads, and its error message says what to do.
+
+Message packages bundled with Isaac Sim work as-is (std_msgs, geometry_msgs, sensor_msgs, nav_msgs, tf2_msgs,
+trajectory_msgs, vision_msgs, visualization_msgs, ackermann_msgs, ...). **Custom messages** must be built for
+Isaac Sim's Python, e.g. with NVIDIA's [IsaacSim-ros_workspaces](https://github.com/isaac-sim/IsaacSim-ros_workspaces)
+(`./build_ros.sh -d humble -v 22.04` builds for Python 3.12 in Docker); then add the built install folder to
+`PYTHONPATH` and `LD_LIBRARY_PATH` before starting Isaac Sim. Until then the node explains which package is missing.
 
 ## Use a generated extension
 

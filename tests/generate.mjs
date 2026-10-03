@@ -139,7 +139,17 @@ const imuSub = {
   outputs: [{ name: "angular_z", uiName: "", type: "double", default: "", description: "" }],
 };
 imuSub.pythonSource = edit(G.pythonTemplate(project, imuSub), "            angular_z = 0.0", "            angular_z = msg.angular_velocity.z if msg is not None else -1.0");
-project.nodes.push(imuPub, imuSub);
+// Custom message whose package is not installed: must load and explain what to do
+const customPub = {
+  ...G.emptyNode("CustomMsgPublisher"),
+  action: true,
+  ros: { ...G.defaultRos(), enabled: true, msgType: G.CUSTOM_MESSAGE, customType: "builder_test_msgs/msg/Reading", topic: "/builder_test/custom",
+    msgDefinition: "std_msgs/Header header\nfloat64 value\nint32 MODE=1\nfloat64[3] xyz" },
+};
+const customPy = G.pythonTemplate(project, customPub);
+for (const line of ['msg.header.frame_id = ""', "msg.value = 0.0", "msg.xyz = [0.0, 0.0, 0.0]"]) assert.ok(customPy.includes(line), `custom template has ${line}`);
+assert.ok(!customPy.includes("MODE"), "constants are skipped");
+project.nodes.push(imuPub, imuSub, customPub);
 result = G.validateProject(project);
 assert.deepEqual(result.errors, []);
 
@@ -173,7 +183,12 @@ assert.equal(back.nodes.length, project.nodes.length);
 for (const orig of project.nodes) {
   const got = back.nodes.find((x) => x.name === orig.name);
   assert.ok(got, `node ${orig.name} imported`);
-  assert.equal(got.pythonSource, orig.pythonSource ?? null, `${orig.name}: python ownership`);
+  if (orig.ros.msgDefinition && !orig.pythonSource) {
+    // Without .ogn-builder.json the pasted .msg is unknown, so the file is kept verbatim (safe).
+    assert.equal(got.pythonSource, G.pythonTemplate(project, orig), `${orig.name}: kept verbatim`);
+  } else {
+    assert.equal(got.pythonSource, orig.pythonSource ?? null, `${orig.name}: python ownership`);
+  }
   assert.equal(got.action, orig.action, `${orig.name}.action`);
   assert.equal(got.ros.enabled, orig.ros.enabled, `${orig.name}.ros.enabled`);
   if (orig.ros.enabled) {
@@ -185,3 +200,11 @@ for (const orig of project.nodes) {
   assert.deepEqual(got.outputs.map((a) => [a.name, a.type]), orig.outputs.map((a) => [a.name, a.type]), `${orig.name} outputs`);
 }
 console.log("re-open: user code kept verbatim, templates still generated, ROS settings detected");
+
+// 8. Re-open WITH the project file: the pasted .msg definition comes back and the template stays a template
+const withProject = { ...textFiles, [G.PROJECT_FILE]: files.find((f) => f.path.endsWith(G.PROJECT_FILE)).content };
+const { project: back2 } = G.importProject(withProject, project.extension.name);
+const custom2 = back2.nodes.find((n) => n.name === "CustomMsgPublisher");
+assert.equal(custom2.ros.msgDefinition, customPub.ros.msgDefinition);
+assert.equal(custom2.pythonSource, null);
+console.log("re-open with project file: .msg definition restored, template still generated");

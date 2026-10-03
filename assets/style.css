@@ -438,3 +438,5 @@ body.has-fullscreen { overflow: hidden; }
   border: 6px solid transparent; border-top: 0; border-bottom-color: #dc2626;
 }
 input.flash { border-color: #dc2626 !important; box-shadow: 0 0 0 3px rgba(220, 38, 38, .25); }
+
+textarea.msg-def { font: 12.5px/1.5 var(--mono); resize: vertical; white-space: pre; tab-size: 4; }

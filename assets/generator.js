@@ -14,7 +14,7 @@
 //                  -> created once as a starting template, never overwritten.
 //                     Re-opened .py files are kept exactly as written.
 
-export const GENERATOR_VERSION = "1.1.0";
+export const GENERATOR_VERSION = "1.2.0";
 export const PROJECT_SCHEMA = 2;
 export const PROJECT_FILE = ".ogn-builder.json";
 
@@ -109,7 +109,7 @@ const PY_KEYWORDS = new Set(
     .split(" ")
 );
 // Names the template itself uses inside compute(); attribute variables avoid them.
-const RESERVED_LOCALS = new Set(["db", "state", "og", "msg", "error", "rclpy", "topic_name", "SingleThreadedExecutor", "_ROS_STATES", "ROS_IMPORT_ERROR"]);
+const RESERVED_LOCALS = new Set(["db", "state", "og", "msg", "error", "rclpy", "topic_name", "SingleThreadedExecutor", "_ROS_STATES", "ROS_IMPORT_ERROR", "MSG_IMPORT_ERROR"]);
 
 const EXEC_IN = { name: "execIn", uiName: "Exec In", type: "execution", default: "", description: "Signal that triggers this node", auto: "action" };
 const EXEC_OUT = { name: "execOut", uiName: "Exec Out", type: "execution", default: "", description: "Signal sent after this node runs", auto: "action" };
@@ -122,7 +122,7 @@ const FALLBACK_PNG_BASE64 =
 // Project model helpers
 
 export function defaultRos() {
-  return { enabled: false, role: "publisher", msgType: "std_msgs/msg/Float64", customType: "", topic: "/my_topic" };
+  return { enabled: false, role: "publisher", msgType: "std_msgs/msg/Float64", customType: "", msgDefinition: "", topic: "/my_topic" };
 }
 
 export function emptyAttribute(type = "double") {
@@ -360,6 +360,8 @@ export function validateProject(project) {
       if (!/^[~/A-Za-z][A-Za-z0-9_/{}~]*$/.test(node.ros.topic || ""))
         errors.push(`Node "${label}": ROS 2 topic "${node.ros.topic}" is not a valid topic name.`);
       if (!node.action) warnings.push(`Node "${label}": ROS 2 nodes usually run in an Action Graph; consider turning on "Action Graph node".`);
+      if (node.ros.msgType === CUSTOM_MESSAGE && String(node.ros.msgDefinition || "").trim() && !parseMsgDefinition(node.ros.msgDefinition).length)
+        warnings.push(`Node "${label}": no fields found in the pasted .msg definition (expected lines like "float64 x").`);
     }
 
     // The user's own Python file: check it still matches the .ogn.
@@ -492,6 +494,55 @@ function variableName(name, taken) {
   return v;
 }
 
+// Placeholders for primitive ROS 2 field types.
+const MSG_PRIMITIVES = {
+  bool: "False", byte: "0", char: "0",
+  int8: "0", uint8: "0", int16: "0", uint16: "0", int32: "0", uint32: "0", int64: "0", uint64: "0",
+  float32: "0.0", float64: "0.0", string: '""', wstring: '""',
+};
+// Common nested types expanded into their fields.
+const MSG_NESTED = {
+  "std_msgs/Header": [["frame_id", '""']],
+  "Header": [["frame_id", '""']],
+  "geometry_msgs/Vector3": [["x", "0.0"], ["y", "0.0"], ["z", "0.0"]],
+  "geometry_msgs/Point": [["x", "0.0"], ["y", "0.0"], ["z", "0.0"]],
+  "geometry_msgs/Quaternion": [["x", "0.0"], ["y", "0.0"], ["z", "0.0"], ["w", "1.0"]],
+};
+
+// Read the fields of a pasted .msg definition into [path, placeholder] pairs.
+// Unknown nested message types become [path, null, type] (written as a comment).
+export function parseMsgDefinition(text) {
+  const fields = [];
+  for (const raw of String(text || "").split("\n")) {
+    const line = raw.replace(/#.*$/, "").trim();
+    if (!line || line.startsWith("---")) continue;
+    const m = line.match(/^([A-Za-z][A-Za-z0-9_/]*)(\[[^\]]*\])?\s+([a-z][a-z0-9_]*)(\s*=.*|\s+.*)?$/);
+    if (!m) continue;
+    const [, type, array, name, rest] = m;
+    if (rest && rest.trim().startsWith("=")) continue; // constant
+    const base = type.replace("/msg/", "/");
+    if (array) {
+      const size = array.slice(1, -1).replace("<=", "");
+      const n = /^\d+$/.test(size) ? parseInt(size, 10) : 0;
+      const zero = MSG_PRIMITIVES[type];
+      fields.push([name, n && zero && n <= 16 ? `[${Array(n).fill(zero).join(", ")}]` : "[]"]);
+    } else if (MSG_PRIMITIVES[type]) {
+      fields.push([name, MSG_PRIMITIVES[type]]);
+    } else if (MSG_NESTED[base]) {
+      for (const [sub, value] of MSG_NESTED[base]) fields.push([`${name}.${sub}`, value]);
+    } else {
+      fields.push([name, null, type]);
+    }
+  }
+  return fields;
+}
+
+export function messageFields(node) {
+  if (node.ros.msgType !== CUSTOM_MESSAGE) return ROS_MESSAGES[node.ros.msgType] || null;
+  const parsed = parseMsgDefinition(node.ros.msgDefinition);
+  return parsed.length ? parsed : null;
+}
+
 function rosImport(node) {
   const [pkg, , type] = rosMessageType(node).split("/");
   return { pkg, type };
@@ -519,6 +570,11 @@ function rosStateCode(project, node) {
     "            raise RuntimeError(",
     '                f"ROS 2 is not available ({ROS_IMPORT_ERROR}). Start Isaac Sim with its internal "',
     '                "ROS 2 libraries and without a sourced system ROS 2 (see docs/README.md)."',
+    "            )",
+    `        if ${rosImport(node).type} is None:`,
+    "            raise RuntimeError(",
+    `                f"Message package '${rosImport(node).pkg}' could not be imported ({MSG_IMPORT_ERROR}). Custom messages must be "`,
+    '                "built for Isaac Sim\'s Python (3.11 in 5.x, 3.12 in 6.x / 7.0); see docs/README.md."',
     "            )",
     "        if not rclpy.ok():",
     "            rclpy.init()",
@@ -557,9 +613,10 @@ function rosStateCode(project, node) {
 
 function rosComputeCode(node) {
   const { type } = rosImport(node);
-  const fields = ROS_MESSAGES[rosMessageType(node)];
+  const fields = messageFields(node);
   if (node.ros.role === "subscriber") {
-    const example = fields ? `msg.${fields[0][0]}` : "msg.<field>";
+    const first = fields && fields.find((f) => f[1] !== null);
+    const example = first ? `msg.${first[0]}` : "msg.<field>";
     return [
       "            state.setup_ros(topic_name, db.abi_node)",
       "            state.executor.spin_once(timeout_sec=0.0)",
@@ -569,8 +626,12 @@ function rosComputeCode(node) {
     ];
   }
   const lines = ["            state.setup_ros(topic_name, db.abi_node)", `            msg = ${type}()`, "            # Fill the message from your inputs (placeholders below)"];
-  if (fields) for (const [path, value] of fields) lines.push(`            msg.${path} = ${value}`);
-  else lines.push("            # msg.<field> = ...");
+  if (fields) {
+    for (const [path, value, nested] of fields)
+      lines.push(value === null ? `            # msg.${path} = ...  (${nested} message: set its fields)` : `            msg.${path} = ${value}`);
+  } else {
+    lines.push("            # msg.<field> = ...  (paste the .msg definition in the builder to list the fields)");
+  }
   lines.push("            state.publisher.publish(msg)");
   return lines;
 }
@@ -606,10 +667,15 @@ export function pythonTemplate(project, node) {
       "try:",
       "    import rclpy",
       ...(node.ros.role === "subscriber" ? ["    from rclpy.executors import SingleThreadedExecutor"] : []),
-      `    from ${pkg}.msg import ${type}`,
       "except Exception as ros_import_error:  # ROS 2 not set up for Isaac Sim's Python version",
       "    rclpy = None",
       "    ROS_IMPORT_ERROR = ros_import_error",
+      "",
+      "try:",
+      `    from ${pkg}.msg import ${type}`,
+      "except Exception as msg_import_error:  # message package not built for Isaac Sim's Python",
+      `    ${type} = None`,
+      "    MSG_IMPORT_ERROR = msg_import_error",
       "",
       "# ROS 2 states created by each OmniGraph node, so release() can clean them up",
       "_ROS_STATES = {}"
@@ -753,6 +819,13 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:<isaac-sim>/exts/isaacsim.ros2.core/humb
 \`\`\`
 
 For a pip install, \`<isaac-sim>\` is \`$(python -c "import isaacsim, os; print(os.path.dirname(isaacsim.__file__))")\`.
+
+Message packages included with Isaac Sim work as-is (std_msgs, geometry_msgs, sensor_msgs, nav_msgs,
+tf2_msgs, trajectory_msgs, vision_msgs, visualization_msgs, ackermann_msgs, ...).
+**Custom messages** must be built for Isaac Sim's Python, e.g. with NVIDIA's
+[IsaacSim-ros_workspaces](https://github.com/isaac-sim/IsaacSim-ros_workspaces) (\`./build_ros.sh -d humble -v 22.04\`
+builds the workspace for Python 3.12 in Docker). Put your package in that workspace, build it, then add the built
+install folder to \`PYTHONPATH\` and \`LD_LIBRARY_PATH\` before starting Isaac Sim.
 Other ROS 2 tools (ros2 topic echo, rviz2) can run normally in a separate, sourced terminal.
 `;
 }
@@ -963,7 +1036,9 @@ export function importProject(files, folderName = "") {
       const skipOut = new Set(node.action ? ["execOut"] : []);
       node.name = name;
       node.uiName = def.uiName || splitWords(name);
-      node.description = def.description || "";
+      // ognJson() writes the label as the description when none was given; read that back as empty.
+      const fallback = def.uiName || splitWords(name);
+      node.description = def.description && def.description !== fallback ? def.description : saved?.description || "";
       node.inputs = attrsFromOgn(def.inputs, skipIn);
       node.outputs = attrsFromOgn(def.outputs, skipOut);
       const cats = Array.isArray(def.categories) ? def.categories : String(def.categories || "").split(",");
