@@ -61,7 +61,9 @@
       <input type="file" id="zipInput" accept=".zip,application/zip" hidden>
       <button class="btn" id="writeFolderBtn" title="Write the extension into a folder on your computer (Chrome / Edge)">Save to folder</button>
       <button class="btn primary" id="downloadBtn">Download .zip</button>
-      <button class="btn icon" id="themeBtn" title="Toggle light / dark" aria-label="Toggle light or dark theme">&#9680;</button>
+      <button class="btn icon" id="themeBtn" title="Toggle light / dark" aria-label="Toggle light or dark theme">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor"/></svg>
+      </button>
     </div>
   </header>
 
@@ -130,6 +132,10 @@
         <button role="tab" class="tab active" data-tab="look" aria-selected="true">In Isaac Sim</button>
         <button role="tab" class="tab" data-tab="files" aria-selected="false">Files</button>
         <button role="tab" class="tab" data-tab="use" aria-selected="false">How to use</button>
+        <button class="btn small tab-tool" id="fullscreenBtn" aria-pressed="false" title="Show this panel full screen (Esc to exit)">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Full screen</span>
+        </button>
       </div>
       <div class="tab-panel" data-panel="look">
         <p class="hint">Approximate look of the node in the Action Graph editor and its inputs in the Property panel.</p>
@@ -144,7 +150,10 @@
           <div class="file-view">
             <div class="file-view-head">
               <code id="fileName"></code>
-              <button class="btn small" id="copyFileBtn">Copy</button>
+              <span class="file-tools">
+                <button class="btn small" id="wrapBtn" aria-pressed="false" title="Wrap long lines">Wrap</button>
+                <button class="btn small" id="copyFileBtn">Copy</button>
+              </span>
             </div>
             <pre><code id="fileCode"></code></pre>
           </div>

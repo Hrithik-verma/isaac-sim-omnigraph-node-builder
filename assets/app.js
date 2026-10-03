@@ -5,6 +5,7 @@ import * as G from "./generator.js";
 
 const STORAGE_KEY = "ogn-builder-project-v1";
 const THEME_KEY = "ogn-builder-theme";
+const WRAP_KEY = "ogn-builder-wrap";
 const TEXT_EXTENSIONS = /\.(toml|ogn|py|json)$/i;
 const SKIP_DIRS = new Set(["__pycache__", ".git", "node_modules", "data", "PACKAGE-LICENSES"]);
 
@@ -1159,6 +1160,22 @@ function bindMenu(menuId) {
   });
 }
 
+function setFullscreen(on) {
+  const panel = document.querySelector(".preview");
+  panel.classList.toggle("fullscreen", on);
+  document.body.classList.toggle("has-fullscreen", on);
+  const btn = $("#fullscreenBtn");
+  btn.setAttribute("aria-pressed", String(on));
+  btn.querySelector("span").textContent = on ? "Exit full screen" : "Full screen";
+  btn.title = on ? "Exit full screen (Esc)" : "Show this panel full screen (Esc to exit)";
+}
+
+function setWrap(on) {
+  document.querySelector(".file-view").classList.toggle("wrap", on);
+  $("#wrapBtn").setAttribute("aria-pressed", String(on));
+  storageSet(WRAP_KEY, on ? "1" : "0");
+}
+
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
 }
@@ -1235,7 +1252,14 @@ function init() {
   document.addEventListener("click", (e) => {
     if (!e.target.closest(".menu")) closeMenus();
   });
-  document.addEventListener("keydown", (e) => e.key === "Escape" && closeMenus());
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    closeMenus();
+    if (document.querySelector(".preview.fullscreen")) setFullscreen(false);
+  });
+  $("#fullscreenBtn").addEventListener("click", () => setFullscreen(!document.querySelector(".preview").classList.contains("fullscreen")));
+  $("#wrapBtn").addEventListener("click", () => setWrap(!document.querySelector(".file-view").classList.contains("wrap")));
+  setWrap(storageGet(WRAP_KEY) === "1");
   $("#importFolderBtn").addEventListener("click", importFolder);
   $("#importZipBtn").addEventListener("click", () => {
     closeMenus();
@@ -1262,7 +1286,11 @@ function init() {
       toast("Copy failed; select the text and copy manually.", "warn");
     }
   });
-  if (!("showDirectoryPicker" in window)) $("#writeFolderBtn").title = "Needs Chrome, Edge or Opera";
+  // Folder access exists only in desktop Chrome / Edge / Opera; elsewhere (Firefox, Safari, phones) use the zip.
+  if (!("showDirectoryPicker" in window)) {
+    $("#writeFolderBtn").hidden = true;
+    $("#importFolderBtn").hidden = true;
+  }
   bindTabs();
   bindDragDrop();
   renderAll();
