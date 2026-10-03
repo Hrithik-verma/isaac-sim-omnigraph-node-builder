@@ -6,17 +6,17 @@
 // The generated layout is a Python-only OmniGraph extension that Kit loads
 // without a build step: OmniGraph scans <ext>/<module path>/ for .ogn files
 // and generates the node database at startup (Isaac Sim 5.x, 6.x, 7.0).
+//
+// File ownership:
+//   builder-owned  .ogn, extension.toml, CategoryDefinition.json, .ogn-builder.json
+//                  -> regenerated from the GUI every time
+//   user-owned     Ogn<Node>.py, __init__.py, docs/, data/, icons/
+//                  -> created once as a starting template, never overwritten.
+//                     Re-opened .py files are kept exactly as written.
 
-export const GENERATOR_VERSION = "1.0.0";
-export const PROJECT_SCHEMA = 1;
+export const GENERATOR_VERSION = "1.1.0";
+export const PROJECT_SCHEMA = 2;
 export const PROJECT_FILE = ".ogn-builder.json";
-
-const USER_BEGIN = "# --- BEGIN USER CODE ---";
-const USER_END = "# --- END USER CODE ---";
-const IMPORTS_BEGIN = "# --- BEGIN USER IMPORTS ---";
-const IMPORTS_END = "# --- END USER IMPORTS ---";
-const STATE_BEGIN = "# --- BEGIN USER STATE ---";
-const STATE_END = "# --- END USER STATE ---";
 
 // kind: how the default value is parsed / validated
 // size: tuple size (for tuple kinds)
@@ -69,20 +69,44 @@ export const BUILTIN_CATEGORIES = [
 ];
 
 export const SUPPORTED_VERSIONS = [
-  { label: "Isaac Sim 5.0", kit: "107.3", python: "3.11", status: "tested" },
-  { label: "Isaac Sim 5.1", kit: "107.3", python: "3.11", status: "same Kit as 5.0" },
-  { label: "Isaac Sim 6.1", kit: "110.3", python: "3.12", status: "tested" },
-  { label: "Isaac Sim 7.0 (alpha)", kit: "110.3", python: "3.12", status: "same Kit as 6.1" },
+  { label: "Isaac Sim 5.0", kit: "107.3", python: "3.11", status: "tested", rosLib: "isaacsim.ros2.bridge" },
+  { label: "Isaac Sim 5.1", kit: "107.3", python: "3.11", status: "same Kit as 5.0", rosLib: "isaacsim.ros2.bridge" },
+  { label: "Isaac Sim 6.1", kit: "110.3", python: "3.12", status: "tested", rosLib: "isaacsim.ros2.core" },
+  { label: "Isaac Sim 7.0 (alpha)", kit: "110.3", python: "3.12", status: "same Kit as 6.1", rosLib: "isaacsim.ros2.core" },
 ];
+
+// ROS 2 message types offered in the GUI. fields: [path, placeholder] used in the template.
+export const ROS_MESSAGES = {
+  "std_msgs/msg/Float64": [["data", "0.0"]],
+  "std_msgs/msg/Float32": [["data", "0.0"]],
+  "std_msgs/msg/Int32": [["data", "0"]],
+  "std_msgs/msg/Int64": [["data", "0"]],
+  "std_msgs/msg/Bool": [["data", "False"]],
+  "std_msgs/msg/String": [["data", '""']],
+  "geometry_msgs/msg/Twist": [
+    ["linear.x", "0.0"], ["linear.y", "0.0"], ["linear.z", "0.0"],
+    ["angular.x", "0.0"], ["angular.y", "0.0"], ["angular.z", "0.0"],
+  ],
+  "geometry_msgs/msg/Vector3": [["x", "0.0"], ["y", "0.0"], ["z", "0.0"]],
+  "geometry_msgs/msg/Point": [["x", "0.0"], ["y", "0.0"], ["z", "0.0"]],
+  "geometry_msgs/msg/Pose": [
+    ["position.x", "0.0"], ["position.y", "0.0"], ["position.z", "0.0"],
+    ["orientation.x", "0.0"], ["orientation.y", "0.0"], ["orientation.z", "0.0"], ["orientation.w", "1.0"],
+  ],
+  "sensor_msgs/msg/JointState": [["name", "[]"], ["position", "[]"], ["velocity", "[]"], ["effort", "[]"]],
+};
+export const CUSTOM_MESSAGE = "custom";
 
 const PY_KEYWORDS = new Set(
   ("False None True and as assert async await break class continue def del elif else except " +
     "finally for from global if import in is lambda nonlocal not or pass raise return try while with yield")
     .split(" ")
 );
+// Names the template itself uses inside compute(); attribute variables avoid them.
+const RESERVED_LOCALS = new Set(["db", "state", "og", "msg", "error", "rclpy", "topic_name", "SingleThreadedExecutor", "_ROS_STATES", "ROS_IMPORT_ERROR"]);
 
-const EXEC_IN = { name: "execIn", uiName: "Exec In", type: "execution", default: "", description: "Signal that triggers this node" };
-const EXEC_OUT = { name: "execOut", uiName: "Exec Out", type: "execution", default: "", description: "Signal sent after this node runs" };
+const EXEC_IN = { name: "execIn", uiName: "Exec In", type: "execution", default: "", description: "Signal that triggers this node", auto: "action" };
+const EXEC_OUT = { name: "execOut", uiName: "Exec Out", type: "execution", default: "", description: "Signal sent after this node runs", auto: "action" };
 
 // 1x1 transparent PNG, used when the caller does not supply rendered icons.
 const FALLBACK_PNG_BASE64 =
@@ -90,6 +114,10 @@ const FALLBACK_PNG_BASE64 =
 
 // ---------------------------------------------------------------------------
 // Project model helpers
+
+export function defaultRos() {
+  return { enabled: false, role: "publisher", msgType: "std_msgs/msg/Float64", customType: "", topic: "/my_topic" };
+}
 
 export function emptyAttribute(type = "double") {
   return { name: "", uiName: "", type, default: TYPE_INFO[type]?.default ?? "", description: "" };
@@ -102,12 +130,11 @@ export function emptyNode(name = "MyNode") {
     description: "",
     extraCategory: "",
     action: false,
-    useState: false,
     inputs: [],
     outputs: [],
-    imports: "",
-    stateInit: "",
-    code: "pass",
+    ros: defaultRos(),
+    pythonSource: null, // user's own Ogn<Node>.py (kept verbatim); null = generated template
+    pythonOriginal: null, // .py content as it was when opened (lets saves detect later edits on disk)
   };
 }
 
@@ -128,11 +155,34 @@ export function defaultProject() {
   };
 }
 
+// Fill in fields that older project files do not have.
+export function normalizeProject(project) {
+  const base = defaultProject();
+  const out = { ...base, ...project, extension: { ...base.extension, ...(project.extension || {}) } };
+  out.schema = PROJECT_SCHEMA;
+  out.nodes = (project.nodes || []).map((n) => {
+    const node = { ...emptyNode(n.name), ...n };
+    node.ros = { ...defaultRos(), ...(n.ros || {}) };
+    node.inputs = (n.inputs || []).map((a) => ({ ...emptyAttribute(a.type), ...a }));
+    node.outputs = (n.outputs || []).map((a) => ({ ...emptyAttribute(a.type), ...a }));
+    for (const legacy of ["code", "imports", "stateInit", "useState"]) delete node[legacy];
+    return node;
+  });
+  return out;
+}
+
 export function splitWords(name) {
   return String(name || "")
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/[_\-]+/g, " ")
     .trim();
+}
+
+function snakeCase(name) {
+  return String(name || "node")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .toLowerCase();
 }
 
 export function modulePath(extName) {
@@ -143,8 +193,22 @@ export function nodeTypeName(project, node) {
   return `${project.extension.name}.${node.name}`;
 }
 
+function rosTopicAttr(node) {
+  return {
+    name: "topicName",
+    uiName: "Topic Name",
+    type: "token",
+    default: node.ros.topic || "/my_topic",
+    description: `ROS 2 topic to ${node.ros.role === "subscriber" ? "subscribe to" : "publish on"}`,
+    auto: "ros",
+  };
+}
+
 export function allInputs(node) {
-  return node.action ? [EXEC_IN, ...node.inputs] : node.inputs;
+  const list = [];
+  if (node.action) list.push(EXEC_IN);
+  if (node.ros?.enabled) list.push(rosTopicAttr(node));
+  return [...list, ...node.inputs];
 }
 
 export function allOutputs(node) {
@@ -153,6 +217,14 @@ export function allOutputs(node) {
 
 export function typeInfo(type) {
   return TYPE_INFO[type];
+}
+
+export function rosMessageType(node) {
+  return node.ros.msgType === CUSTOM_MESSAGE ? String(node.ros.customType || "").trim() : node.ros.msgType;
+}
+
+export function usesRos(project) {
+  return project.nodes.some((n) => n.ros?.enabled);
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +270,13 @@ function parseDefault(attr) {
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+// Attribute names used as db.inputs.X / db.outputs.X in a .py source.
+export function pythonReferences(source) {
+  const refs = { inputs: new Set(), outputs: new Set() };
+  for (const m of String(source || "").matchAll(/\bdb\.(inputs|outputs)\.([A-Za-z_][A-Za-z0-9_]*)/g)) refs[m[1]].add(m[2]);
+  return refs;
+}
+
 export function validateProject(project) {
   const errors = [];
   const warnings = [];
@@ -225,7 +304,6 @@ export function validateProject(project) {
       errors.push(`Node "${label}": name must be PascalCase letters/digits, e.g. MultiplyNumbers`);
     if (seen.has(node.name)) errors.push(`Node "${label}" is defined twice.`);
     seen.add(node.name);
-    if (!String(node.code || "").trim()) errors.push(`Node "${label}": compute code is empty (use "pass").`);
 
     for (const [side, list] of [["input", allInputs(node)], ["output", allOutputs(node)]]) {
       const names = new Set();
@@ -235,8 +313,8 @@ export function validateProject(project) {
           errors.push(`${where}: name must start with a lowercase letter (camelCase).`);
         else if (PY_KEYWORDS.has(attr.name)) errors.push(`${where}: "${attr.name}" is a Python keyword.`);
         if (names.has(attr.name)) {
-          const clash = node.action && (attr.name === "execIn" || attr.name === "execOut");
-          errors.push(clash ? `${where}: already added by the Action Graph switch.` : `${where}: duplicate name.`);
+          const auto = list.find((a) => a.name === attr.name && a.auto);
+          errors.push(auto ? `${where}: already added by the ${auto.auto === "ros" ? "ROS 2" : "Action Graph"} option.` : `${where}: duplicate name.`);
         }
         names.add(attr.name);
         if (!TYPE_INFO[attr.type]) errors.push(`${where}: unknown type "${attr.type}".`);
@@ -246,7 +324,29 @@ export function validateProject(project) {
         }
       }
     }
-    if (allOutputs(node).length === 0) warnings.push(`Node "${label}" has no outputs.`);
+    if (allOutputs(node).length === 0 && !(node.ros?.enabled && node.ros.role === "publisher"))
+      warnings.push(`Node "${label}" has no outputs.`);
+
+    if (node.ros?.enabled) {
+      const type = rosMessageType(node);
+      if (!/^[a-z][a-z0-9_]*\/msg\/[A-Z][A-Za-z0-9]*$/.test(type))
+        errors.push(`Node "${label}": ROS 2 message type must look like package/msg/Type, e.g. std_msgs/msg/Float64`);
+      if (!/^[~/A-Za-z][A-Za-z0-9_/{}~]*$/.test(node.ros.topic || ""))
+        errors.push(`Node "${label}": ROS 2 topic "${node.ros.topic}" is not a valid topic name.`);
+      if (!node.action) warnings.push(`Node "${label}": ROS 2 nodes usually run in an Action Graph; consider turning on "Action Graph node".`);
+    }
+
+    // The user's own Python file: check it still matches the .ogn.
+    if (node.pythonSource) {
+      const file = `Ogn${node.name}.py`;
+      if (!new RegExp(`\\bclass\\s+Ogn${node.name}\\s*[:(]`).test(node.pythonSource))
+        errors.push(`Node "${label}": ${file} has no "class Ogn${node.name}". Rename the class in your code or reset it to the template.`);
+      const refs = pythonReferences(node.pythonSource);
+      const ins = new Set(allInputs(node).map((a) => a.name));
+      const outs = new Set(allOutputs(node).map((a) => a.name));
+      for (const r of refs.inputs) if (!ins.has(r)) warnings.push(`Node "${label}": ${file} uses db.inputs.${r}, which is not an input.`);
+      for (const r of refs.outputs) if (!outs.has(r)) warnings.push(`Node "${label}": ${file} uses db.outputs.${r}, which is not an output.`);
+    }
   }
   return { errors, warnings };
 }
@@ -271,6 +371,11 @@ function csv(value) {
 
 export function extensionToml(project) {
   const ext = project.extension;
+  const ros = usesRos(project)
+    ? `# ROS 2 bridge: provides rclpy and message packages for Isaac Sim's Python version.
+"isaacsim.ros2.bridge" = {}
+`
+    : "";
   return `# Generated by Isaac Sim OmniGraph Node Builder ${GENERATOR_VERSION}
 # Python-only OmniGraph extension: no build step needed (Isaac Sim 5.x / 6.x / 7.0).
 
@@ -280,7 +385,7 @@ title = ${tomlString(ext.title)}
 description = ${tomlString(ext.description)}
 category = ${tomlString(ext.category || "Graph")}
 authors = ${tomlList(csv(ext.authors))}
-keywords = ["isaac sim", "omnigraph", "action graph", "nodes"]
+keywords = ["isaac sim", "omnigraph", "action graph", "nodes"${usesRos(project) ? ', "ros2"' : ""}]
 changelog = "docs/CHANGELOG.md"
 readme = "docs/README.md"
 icon = "data/icon.png"
@@ -291,7 +396,7 @@ reloadable = true
 
 [dependencies]
 "omni.graph" = {}
-
+${ros}
 # OmniGraph scans this module's folder for .ogn/.py pairs and registers the nodes.
 [[python.module]]
 name = ${tomlString(ext.name)}
@@ -336,74 +441,231 @@ export function ognJson(project, node) {
   return JSON.stringify({ [node.name]: def }, null, 4) + "\n";
 }
 
-function indent(text, spaces) {
-  const pad = " ".repeat(spaces);
-  return String(text)
-    .replace(/\t/g, "    ")
-    .split("\n")
-    .map((line) => (line.trim() ? pad + line : ""))
-    .join("\n");
+// Python placeholder value for an output of the given type.
+function placeholder(type) {
+  const info = TYPE_INFO[type] || {};
+  if (info.kind === "bool") return "False";
+  if (info.kind === "int" || info.kind === "uint") return "0";
+  if (info.kind === "number") return "0.0";
+  if (info.kind === "text") return '""';
+  if (info.kind === "array") return "[]";
+  if (info.kind === "tuple") {
+    if (type.startsWith("quat")) return "[0.0, 0.0, 0.0, 1.0]";
+    const zero = type.startsWith("int") ? "0" : "0.0";
+    return `[${Array(info.size).fill(zero).join(", ")}]`;
+  }
+  return "None";
 }
 
-function attrDoc(list, prefix) {
-  if (!list.length) return `    (none)`;
-  return list.map((a) => `    db.${prefix}.${a.name} (${a.type})${a.description ? ": " + a.description : ""}`).join("\n");
+function variableName(name, taken) {
+  let v = RESERVED_LOCALS.has(name) ? `${name}_value` : name;
+  while (taken.has(v)) v = `${v}_out`;
+  taken.add(v);
+  return v;
+}
+
+function rosImport(node) {
+  const [pkg, , type] = rosMessageType(node).split("/");
+  return { pkg, type };
+}
+
+function rosStateCode(project, node) {
+  const { type } = rosImport(node);
+  const isSub = node.ros.role === "subscriber";
+  const rosNodeName = `og_${snakeCase(node.name)}`;
+  const lines = [
+    "",
+    "        # ROS 2 handles, created on the first compute()",
+    "        self.ros_node = None",
+    isSub ? "        self.subscription = None" : "        self.publisher = None",
+    ...(isSub ? ["        self.executor = None", "        self.latest_msg = None"] : []),
+    "        self.topic = None",
+    "",
+    "    def setup_ros(self, topic, node):",
+    `        """Create the ROS 2 node and ${isSub ? "subscription" : "publisher"} (again if the topic changes)"""`,
+    "        _ROS_STATES.setdefault(node.node_id(), set()).add(self)",
+    "        if self.ros_node is not None and topic == self.topic:",
+    "            return",
+    "        self.cleanup_ros()",
+    "        if rclpy is None:",
+    "            raise RuntimeError(",
+    '                f"ROS 2 is not available ({ROS_IMPORT_ERROR}). Start Isaac Sim with its internal "',
+    '                "ROS 2 libraries and without a sourced system ROS 2 (see docs/README.md)."',
+    "            )",
+    "        if not rclpy.ok():",
+    "            rclpy.init()",
+    `        self.ros_node = rclpy.create_node(f"${rosNodeName}_{id(self)}")`,
+  ];
+  if (isSub) {
+    lines.push(
+      `        self.subscription = self.ros_node.create_subscription(${type}, topic, self.on_message, 10)`,
+      "        self.executor = SingleThreadedExecutor()",
+      "        self.executor.add_node(self.ros_node)"
+    );
+  } else {
+    lines.push(`        self.publisher = self.ros_node.create_publisher(${type}, topic, 10)`);
+  }
+  lines.push("        self.topic = topic", "");
+  if (isSub) {
+    lines.push(
+      "    def on_message(self, msg):",
+      '        """Called for every received message (during executor.spin_once)"""',
+      "        self.latest_msg = msg",
+      ""
+    );
+  }
+  lines.push(
+    "    def cleanup_ros(self):",
+    '        """Destroy the ROS 2 node (topic change or node deleted)"""',
+    ...(isSub ? ["        if self.executor is not None:", "            self.executor.shutdown()", "            self.executor = None"] : []),
+    "        if self.ros_node is not None:",
+    "            self.ros_node.destroy_node()",
+    "        self.ros_node = None",
+    isSub ? "        self.subscription = None" : "        self.publisher = None",
+    "        self.topic = None"
+  );
+  return lines;
+}
+
+function rosComputeCode(node) {
+  const { type } = rosImport(node);
+  const fields = ROS_MESSAGES[rosMessageType(node)];
+  if (node.ros.role === "subscriber") {
+    const example = fields ? `msg.${fields[0][0]}` : "msg.<field>";
+    return [
+      "            state.setup_ros(topic_name, db.abi_node)",
+      "            state.executor.spin_once(timeout_sec=0.0)",
+      `            msg = state.latest_msg  # newest ${type}, or None until the first message arrives`,
+      "            if msg is not None:",
+      `                pass  # read the message here, e.g. value = ${example}`,
+    ];
+  }
+  const lines = ["            state.setup_ros(topic_name, db.abi_node)", `            msg = ${type}()`, "            # Fill the message from your inputs (placeholders below)"];
+  if (fields) for (const [path, value] of fields) lines.push(`            msg.${path} = ${value}`);
+  else lines.push("            # msg.<field> = ...");
+  lines.push("            state.publisher.publish(msg)");
+  return lines;
+}
+
+// Starting template for Ogn<Node>.py, modelled on the Isaac Sim VS Code
+// extension template: an internal state class and a compute() that reads
+// inputs, leaves room for the user's computation, and writes outputs.
+export function pythonTemplate(project, node) {
+  const cls = `Ogn${node.name}`;
+  const ros = node.ros?.enabled;
+  const isAction = node.action;
+  const L = [];
+
+  L.push(`"""${node.uiName || splitWords(node.name)} (${nodeTypeName(project, node)})`);
+  if (node.description) L.push("", node.description);
+  L.push(
+    "",
+    `Starting template generated by Isaac Sim OmniGraph Node Builder ${GENERATOR_VERSION}.`,
+    "This file is yours: change anything. The builder never overwrites it.",
+    `Inputs and outputs are defined in ${cls}.ogn; the names used as db.inputs.<name>`,
+    "and db.outputs.<name> must match it.",
+    "",
+    "OmniGraph Python node reference:",
+    "  https://docs.omniverse.nvidia.com/kit/docs/omni.graph.docs/latest/dev/ogn/ogn_code_samples_python.html",
+    `"""`,
+    "",
+    "import omni.graph.core as og"
+  );
+  if (ros) {
+    const { pkg, type } = rosImport(node);
+    L.push(
+      "",
+      "try:",
+      "    import rclpy",
+      ...(node.ros.role === "subscriber" ? ["    from rclpy.executors import SingleThreadedExecutor"] : []),
+      `    from ${pkg}.msg import ${type}`,
+      "except Exception as ros_import_error:  # ROS 2 not set up for Isaac Sim's Python version",
+      "    rclpy = None",
+      "    ROS_IMPORT_ERROR = ros_import_error",
+      "",
+      "# ROS 2 states created by each OmniGraph node, so release() can clean them up",
+      "_ROS_STATES = {}"
+    );
+  }
+  L.push("", "");
+
+  // Internal state
+  L.push(
+    `class ${cls}InternalState:`,
+    '    """Per-node state that persists between compute() calls"""',
+    "",
+    "    def __init__(self):",
+    '        """Instantiate the per-node state information"""',
+    "        # Add your own variables here, e.g. self.counter = 0",
+    "        self.initialized = False"
+  );
+  if (ros) L.push(...rosStateCode(project, node));
+  L.push("", "");
+
+  // Node class
+  L.push(
+    `class ${cls}:`,
+    `    """${(node.description || node.uiName || node.name).replace(/"""/g, "")}"""`,
+    "",
+    "    @staticmethod",
+    "    def internal_state():",
+    '        """Returns an object that contains per-node state information"""',
+    `        return ${cls}InternalState()`,
+    ""
+  );
+  if (ros) {
+    L.push(
+      "    @staticmethod",
+      "    def release(node):",
+      '        """Called when the node is deleted: free the ROS 2 handles"""',
+      "        for state in _ROS_STATES.pop(node.node_id(), ()):",
+      "            state.cleanup_ros()",
+      ""
+    );
+  }
+  L.push(
+    "    @staticmethod",
+    "    def compute(db) -> bool:",
+    '        """Compute the outputs from the current inputs and internal state"""',
+    "        state = db.per_instance_state",
+    "",
+    "        try:",
+    "            # 1. Read input values"
+  );
+
+  const taken = new Set();
+  const dataInputs = allInputs(node).filter((a) => a.type !== "execution" && a.auto !== "ros");
+  if (ros) L.push("            topic_name = db.inputs.topicName");
+  for (const a of dataInputs) L.push(`            ${variableName(a.name, taken)} = db.inputs.${a.name}`);
+  if (!dataInputs.length && !ros) L.push("            # (no data inputs)");
+  L.push("", "            # 2. Do your custom computation here");
+  if (ros) L.push(...rosComputeCode(node));
+  const dataOutputs = allOutputs(node).filter((a) => a.type !== "execution");
+  const outVars = dataOutputs.map((a) => [a, variableName(a.name, taken)]);
+  for (const [a, v] of outVars) L.push(`            ${v} = ${placeholder(a.type)}`);
+  if (!ros && !outVars.length) L.push("            pass");
+  L.push("", "            # 3. Write output values");
+  for (const [a, v] of outVars) L.push(`            db.outputs.${a.name} = ${v}`);
+  const execOuts = allOutputs(node).filter((a) => a.type === "execution");
+  if (execOuts.length) {
+    L.push("            state.initialized = True", "");
+    L.push("            # Trigger an execution output so the Action Graph continues");
+    if (isAction) L.push("            db.outputs.execOut = og.ExecutionAttributeState.ENABLED");
+    for (const a of execOuts.filter((x) => !x.auto)) L.push(`            # db.outputs.${a.name} = og.ExecutionAttributeState.ENABLED`);
+  } else {
+    L.push("            state.initialized = True");
+  }
+  L.push(
+    "        except Exception as error:",
+    `            db.log_error(f"Computation error: {error}")`,
+    "            return False",
+    "        return True"
+  );
+  return L.join("\n") + "\n";
 }
 
 export function nodePython(project, node) {
-  const cls = `Ogn${node.name}`;
-  const userImports = String(node.imports || "").trim();
-  const lines = [];
-  lines.push(`"""${node.uiName || splitWords(node.name)}: ${nodeTypeName(project, node)}`);
-  lines.push("");
-  if (node.description) lines.push(node.description, "");
-  lines.push("Inputs:", attrDoc(allInputs(node), "inputs"));
-  lines.push("Outputs:", attrDoc(allOutputs(node), "outputs"));
-  lines.push("");
-  lines.push(`Generated by Isaac Sim OmniGraph Node Builder ${GENERATOR_VERSION}.`);
-  lines.push("Edit the code between the BEGIN/END markers; the builder can re-import it.");
-  lines.push(`"""`);
-  lines.push("");
-  lines.push("import omni.graph.core as og");
-  lines.push("");
-  lines.push(IMPORTS_BEGIN);
-  if (userImports) lines.push(userImports);
-  lines.push(IMPORTS_END);
-  lines.push("");
-  lines.push("");
-  if (node.useState) {
-    lines.push(`class ${cls}InternalState:`);
-    lines.push(`    """Per-node state that persists between compute() calls"""`);
-    lines.push("");
-    lines.push("    def __init__(self):");
-    lines.push(`        ${STATE_BEGIN}`);
-    lines.push(indent(String(node.stateInit || "").trim() || "pass", 8));
-    lines.push(`        ${STATE_END}`);
-    lines.push("");
-    lines.push("");
-  }
-  lines.push(`class ${cls}:`);
-  lines.push(`    """${(node.description || node.uiName || node.name).replace(/"""/g, "")}"""`);
-  lines.push("");
-  if (node.useState) {
-    lines.push("    @staticmethod");
-    lines.push("    def internal_state():");
-    lines.push(`        return ${cls}InternalState()`);
-    lines.push("");
-  }
-  lines.push("    @staticmethod");
-  lines.push("    def compute(db) -> bool:");
-  if (node.useState) lines.push("        state = db.internal_state");
-  lines.push("        try:");
-  lines.push(`            ${USER_BEGIN}`);
-  lines.push(indent(String(node.code || "").trim() || "pass", 12));
-  lines.push(`            ${USER_END}`);
-  if (node.action) lines.push("            db.outputs.execOut = og.ExecutionAttributeState.ENABLED");
-  lines.push("        except Exception as error:");
-  lines.push(`            db.log_error(f"${node.name} failed: {error}")`);
-  lines.push("            return False");
-  lines.push("        return True");
-  return lines.join("\n") + "\n";
+  return node.pythonSource ?? pythonTemplate(project, node);
 }
 
 export function categoryJson(project) {
@@ -442,10 +704,38 @@ registers every Ogn*.ogn / Ogn*.py pair found in the nodes/ folder.
 `;
 }
 
+function rosReadme(project) {
+  if (!usesRos(project)) return "";
+  return `
+## ROS 2 nodes
+
+These nodes use \`rclpy\` from Isaac Sim's ROS 2 bridge (enabled automatically as a dependency).
+Isaac Sim needs its **internal** ROS 2 libraries, because a system ROS 2 install (e.g. Humble with
+Python 3.10) does not match Isaac Sim's Python (3.11 in 5.x, 3.12 in 6.x / 7.0).
+
+Start Isaac Sim from a terminal where ROS 2 is **not** sourced, after setting:
+
+\`\`\`bash
+export ROS_DISTRO=humble                      # or jazzy
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+# Isaac Sim 6.x / 7.0:
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:<isaac-sim>/exts/isaacsim.ros2.core/humble/lib
+# Isaac Sim 5.x:
+# export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:<isaac-sim>/exts/isaacsim.ros2.bridge/humble/lib
+\`\`\`
+
+For a pip install, \`<isaac-sim>\` is \`$(python -c "import isaacsim, os; print(os.path.dirname(isaacsim.__file__))")\`.
+Other ROS 2 tools (ros2 topic echo, rviz2) can run normally in a separate, sourced terminal.
+`;
+}
+
 export function readme(project) {
   const ext = project.extension;
   const nodeRows = project.nodes
-    .map((n) => `| ${n.uiName || n.name} | \`${nodeTypeName(project, n)}\` | ${n.action ? "Action" : "Data"} |`)
+    .map((n) => {
+      const kind = [n.action ? "Action" : "Data", n.ros?.enabled ? `ROS 2 ${n.ros.role}` : ""].filter(Boolean).join(", ");
+      return `| ${n.uiName || n.name} | \`${nodeTypeName(project, n)}\` | ${kind} |`;
+    })
     .join("\n");
   return `# ${ext.title}
 
@@ -480,15 +770,19 @@ manager.add_path("/path/to/isaacsim_exts")
 manager.set_extension_enabled_immediate("${ext.name}", True)
 \`\`\`
 
-## Editing
+## Writing your node code
 
-- Change node logic in \`${modulePath(ext.name)}/nodes/Ogn<Node>.py\` between the BEGIN/END USER CODE markers.
-  Changes reload automatically while Isaac Sim runs.
-- Inputs/outputs live in \`Ogn<Node>.ogn\`. Names used in Python (\`db.inputs.x\`) must match the .ogn exactly.
+Each \`${modulePath(ext.name)}/nodes/Ogn<Node>.py\` is a starting template: it reads every input,
+leaves a spot for your computation and writes every output. Change it however you like;
+it reloads automatically while Isaac Sim runs.
+
+- Inputs/outputs live in \`Ogn<Node>.ogn\`. Names used in Python (\`db.inputs.x\`) must match the .ogn.
 - \`Ogn<Name>.ogn\`, \`Ogn<Name>.py\` and \`class Ogn<Name>\` must share the same \`<Name>\`.
+- Use \`state\` (\`db.per_instance_state\`, the InternalState object) for values that must survive between evaluations.
 - Code must run on Python 3.11 (Isaac Sim 5.x) and 3.12 (6.x / 7.0) if you target both.
-- Re-open the folder (or this extension's \`.ogn-builder.json\`) in the builder to edit it with the GUI again.
-`;
+- Re-open this folder in the builder to change inputs/outputs with the GUI. Your .py files are kept
+  as they are; the builder warns if they use names that no longer exist.
+${rosReadme(project)}`;
 }
 
 export function changelog(project) {
@@ -506,66 +800,54 @@ function base64ToBytes(b64) {
   return Uint8Array.from(Buffer.from(b64, "base64"));
 }
 
-// Returns [{ path, content }] with paths starting at the extension folder.
+// What is saved in .ogn-builder.json (no copies of the user's code).
+export function projectFileContent(project) {
+  const slim = {
+    ...project,
+    generator: GENERATOR_VERSION,
+    nodes: project.nodes.map(({ pythonSource, pythonOriginal, ...rest }) => rest),
+  };
+  return JSON.stringify(slim, null, 2) + "\n";
+}
+
+// Returns [{ path, content, owner }] with paths starting at the extension folder.
 // content is a string, or a Uint8Array for binary files.
+// owner "builder": regenerate on every save. owner "user": create once, never overwrite.
 export function generateFiles(project, assets = {}) {
   const ext = project.extension;
   const root = ext.name;
   const mod = `${root}/${modulePath(ext.name)}`;
   const fallback = base64ToBytes(FALLBACK_PNG_BASE64);
   const files = [
-    { path: `${root}/config/extension.toml`, content: extensionToml(project) },
-    { path: `${root}/docs/README.md`, content: readme(project) },
-    { path: `${root}/docs/CHANGELOG.md`, content: changelog(project) },
-    { path: `${root}/data/icon.png`, content: assets.iconPng || fallback },
-    { path: `${root}/data/preview.png`, content: assets.previewPng || fallback },
-    { path: `${mod}/__init__.py`, content: initPython(project) },
-    { path: `${mod}/nodes/config/CategoryDefinition.json`, content: categoryJson(project) },
-    { path: `${mod}/nodes/icons/icon.svg`, content: iconSvg() },
+    { path: `${root}/config/extension.toml`, content: extensionToml(project), owner: "builder" },
+    { path: `${root}/docs/README.md`, content: readme(project), owner: "user" },
+    { path: `${root}/docs/CHANGELOG.md`, content: changelog(project), owner: "user" },
+    { path: `${root}/data/icon.png`, content: assets.iconPng || fallback, owner: "user" },
+    { path: `${root}/data/preview.png`, content: assets.previewPng || fallback, owner: "user" },
+    { path: `${mod}/__init__.py`, content: initPython(project), owner: "user" },
+    { path: `${mod}/nodes/config/CategoryDefinition.json`, content: categoryJson(project), owner: "builder" },
+    { path: `${mod}/nodes/icons/icon.svg`, content: iconSvg(), owner: "user" },
   ];
   for (const node of project.nodes) {
-    files.push({ path: `${mod}/nodes/Ogn${node.name}.ogn`, content: ognJson(project, node) });
-    files.push({ path: `${mod}/nodes/Ogn${node.name}.py`, content: nodePython(project, node) });
+    files.push({ path: `${mod}/nodes/Ogn${node.name}.ogn`, content: ognJson(project, node), owner: "builder" });
+    files.push({ path: `${mod}/nodes/Ogn${node.name}.py`, content: nodePython(project, node), owner: "user", node: node.name });
   }
-  files.push({ path: `${root}/${PROJECT_FILE}`, content: JSON.stringify(project, null, 2) + "\n" });
+  files.push({ path: `${root}/${PROJECT_FILE}`, content: projectFileContent(project), owner: "builder" });
   return files;
+}
+
+// Keep the user's code in step with a rename made in the GUI.
+export function renameInSource(source, kind, oldName, newName) {
+  if (!source || !oldName || !newName || oldName === newName) return source;
+  if (kind === "node") return source.replace(new RegExp(`\\bOgn${oldName}(?=(InternalState|Database)?\\b)`, "g"), `Ogn${newName}`);
+  return source.replace(new RegExp(`\\bdb\\.${kind}\\.${oldName}\\b`, "g"), `db.${kind}.${newName}`);
 }
 
 // ---------------------------------------------------------------------------
 // Import: rebuild a project from existing extension files.
 
-function between(text, begin, end) {
-  const lines = text.split("\n");
-  const b = lines.findIndex((l) => l.trim() === begin);
-  const e = lines.findIndex((l, i) => i > b && l.trim() === end);
-  if (b < 0 || e < 0) return null;
-  return dedent(lines.slice(b + 1, e).join("\n"));
-}
-
-function dedent(text) {
-  const lines = text.replace(/\t/g, "    ").split("\n");
-  const widths = lines.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length);
-  const min = widths.length ? Math.min(...widths) : 0;
-  return lines.map((l) => l.slice(min)).join("\n").replace(/^\n+|\n+$/g, "");
-}
-
-// Fallback for .py files not made by the builder: take the body of compute().
-function computeBody(text) {
-  const lines = text.replace(/\t/g, "    ").split("\n");
-  const start = lines.findIndex((l) => /^\s*def compute\s*\(/.test(l));
-  if (start < 0) return null;
-  const defIndent = lines[start].match(/^ */)[0].length;
-  const body = [];
-  for (let i = start + 1; i < lines.length; i++) {
-    const l = lines[i];
-    if (l.trim() && l.match(/^ */)[0].length <= defIndent) break;
-    body.push(l);
-  }
-  return dedent(body.join("\n"));
-}
-
 function defaultToText(attr) {
-  if (attr.default === undefined) return TYPE_INFO[attr.type]?.kind === "text" ? "" : "";
+  if (attr.default === undefined) return "";
   return typeof attr.default === "string" ? attr.default : JSON.stringify(attr.default);
 }
 
@@ -586,6 +868,20 @@ function parseTomlValue(toml, key) {
   return m ? m[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\") : "";
 }
 
+function rosFromPython(py, topicDefault) {
+  if (!py || !/\brclpy\b/.test(py)) return null;
+  const imp = py.match(/^[ \t]*from\s+([a-z][a-z0-9_]*)\.msg\s+import\s+([A-Z][A-Za-z0-9]*)/m);
+  const type = imp ? `${imp[1]}/msg/${imp[2]}` : "std_msgs/msg/Float64";
+  const known = Object.prototype.hasOwnProperty.call(ROS_MESSAGES, type);
+  return {
+    enabled: true,
+    role: /create_subscription\s*\(/.test(py) ? "subscriber" : "publisher",
+    msgType: known ? type : CUSTOM_MESSAGE,
+    customType: known ? "" : type,
+    topic: topicDefault || "/my_topic",
+  };
+}
+
 // files: { "relative/path": "text content" } relative to the extension folder.
 export function importProject(files, folderName = "") {
   const warnings = [];
@@ -594,7 +890,7 @@ export function importProject(files, folderName = "") {
 
   const projectPath = paths.find((p) => p === PROJECT_FILE || p.endsWith("/" + PROJECT_FILE));
   if (projectPath) {
-    project = JSON.parse(files[projectPath]);
+    project = normalizeProject(JSON.parse(files[projectPath]));
   } else {
     project = defaultProject();
     const tomlPath = paths.find((p) => p === "config/extension.toml" || p.endsWith("/config/extension.toml"));
@@ -608,13 +904,12 @@ export function importProject(files, folderName = "") {
     project.extension.category = parseTomlValue(toml, "category") || "Graph";
     const authors = toml.match(/^\s*authors\s*=\s*\[([^\]]*)\]/m);
     if (authors) project.extension.authors = [...authors[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]).join(", ");
-    project.nodes = [];
   }
 
   // .ogn/.py files on disk are the source of truth for nodes.
   const ognPaths = paths.filter((p) => /(^|\/)Ogn[A-Za-z0-9_]+\.ogn$/.test(p) && !p.includes("/ogn/"));
-  if (ognPaths.length) {
-    const byName = Object.fromEntries((project.nodes || []).map((n) => [n.name, n]));
+  if (ognPaths.length || !projectPath) {
+    const byName = Object.fromEntries(project.nodes.map((n) => [n.name, n]));
     const nodes = [];
     for (const p of ognPaths.sort()) {
       let parsed;
@@ -626,31 +921,35 @@ export function importProject(files, folderName = "") {
       }
       const [name, def] = Object.entries(parsed)[0] || [];
       if (!name) continue;
-      const action =
-        def.inputs?.execIn?.type === "execution" && def.outputs?.execOut?.type === "execution";
-      const skip = new Set(action ? ["execIn", "execOut"] : []);
-      const node = { ...emptyNode(name), ...(byName[name] || {}) };
+      const py = files[p.replace(/\.ogn$/, ".py")] ?? null;
+      const saved = byName[name];
+      const node = { ...emptyNode(name), ...(saved || {}) };
+      node.ros = { ...defaultRos(), ...(saved?.ros || {}) };
+      if (!saved) {
+        const detected = rosFromPython(py, def.inputs?.topicName?.default);
+        if (detected && def.inputs?.topicName) node.ros = detected;
+      }
+      node.action = def.inputs?.execIn?.type === "execution" && def.outputs?.execOut?.type === "execution";
+      if (node.ros.enabled && def.inputs?.topicName?.default !== undefined) node.ros.topic = String(def.inputs.topicName.default);
+      const skipIn = new Set([...(node.action ? ["execIn"] : []), ...(node.ros.enabled ? ["topicName"] : [])]);
+      const skipOut = new Set(node.action ? ["execOut"] : []);
       node.name = name;
       node.uiName = def.uiName || splitWords(name);
       node.description = def.description || "";
-      node.action = action;
-      node.inputs = attrsFromOgn(def.inputs, skip);
-      node.outputs = attrsFromOgn(def.outputs, skip);
+      node.inputs = attrsFromOgn(def.inputs, skipIn);
+      node.outputs = attrsFromOgn(def.outputs, skipOut);
       const cats = Array.isArray(def.categories) ? def.categories : String(def.categories || "").split(",");
       node.extraCategory = cats.map((c) => c.trim()).find((c) => BUILTIN_CATEGORIES.includes(c)) || "";
 
-      const py = files[p.replace(/\.ogn$/, ".py")];
-      if (py) {
-        const userCode = between(py, USER_BEGIN, USER_END);
-        node.code = userCode ?? computeBody(py) ?? node.code;
-        if (userCode === null) warnings.push(`${p.replace(/\.ogn$/, ".py")}: no builder markers; imported the whole compute() body.`);
-        node.imports = between(py, IMPORTS_BEGIN, IMPORTS_END) ?? node.imports ?? "";
-        const stateInit = between(py, STATE_BEGIN, STATE_END);
-        node.useState = stateInit !== null || /def internal_state\s*\(/.test(py);
-        node.stateInit = stateInit ?? node.stateInit ?? "";
-        if (userCode === null) node.imports = "";
+      if (py === null) {
+        warnings.push(`${p}: matching .py file not found; a new template will be created.`);
+        node.pythonSource = null;
+        node.pythonOriginal = null;
       } else {
-        warnings.push(`${p}: matching .py file not found.`);
+        // An untouched template stays "generated" so it follows GUI edits; anything else is kept verbatim.
+        const untouched = py === pythonTemplate(project, { ...node, pythonSource: null });
+        node.pythonSource = untouched ? null : py;
+        node.pythonOriginal = py;
       }
       nodes.push(node);
     }
@@ -661,102 +960,89 @@ export function importProject(files, folderName = "") {
 }
 
 // ---------------------------------------------------------------------------
-// Presets
+// Starting layouts. These only set up inputs/outputs; the Python file is
+// always the neutral template, so nothing is assumed about the logic.
 
 function attr(name, type, def, description, uiName) {
   return { name, uiName: uiName || "", type, default: def ?? TYPE_INFO[type].default, description: description || "" };
 }
 
 export const PRESETS = {
-  multiply: {
-    label: "Multiply two numbers",
+  twoInOneOut: {
+    label: "Two numbers in, one out",
     node: () => ({
-      ...emptyNode("MultiplyNumbers"),
-      uiName: "Multiply Numbers",
-      description: "Multiplies two numbers: Product = A * B",
+      ...emptyNode("MathOperation"),
+      uiName: "Math Operation",
+      description: "Combines two numbers into one result",
       extraCategory: "math:operator",
       inputs: [attr("a", "double", "0.0", "First number", "A"), attr("b", "double", "0.0", "Second number", "B")],
-      outputs: [attr("product", "double", "", "A * B", "Product")],
-      code: "db.outputs.product = db.inputs.a * db.inputs.b",
+      outputs: [attr("result", "double", "", "Result")],
     }),
   },
-  add: {
-    label: "Add two numbers",
+  vector: {
+    label: "Vector in, number out",
     node: () => ({
-      ...emptyNode("AddNumbers"),
-      uiName: "Add Numbers",
-      description: "Adds two numbers: Sum = A + B",
-      extraCategory: "math:operator",
-      inputs: [attr("a", "double", "0.0", "First number", "A"), attr("b", "double", "0.0", "Second number", "B")],
-      outputs: [attr("sum", "double", "", "A + B", "Sum")],
-      code: "db.outputs.sum = db.inputs.a + db.inputs.b",
-    }),
-  },
-  clamp: {
-    label: "Clamp a value",
-    node: () => ({
-      ...emptyNode("ClampValue"),
-      uiName: "Clamp Value",
-      description: "Limits a value to the range [Min, Max]",
-      extraCategory: "math:operator",
-      inputs: [
-        attr("value", "double", "0.0", "Value to clamp"),
-        attr("min", "double", "0.0", "Lower limit", "Min"),
-        attr("max", "double", "1.0", "Upper limit", "Max"),
-      ],
-      outputs: [attr("result", "double", "", "Clamped value")],
-      code: "db.outputs.result = max(db.inputs.min, min(db.inputs.max, db.inputs.value))",
-    }),
-  },
-  vectorLength: {
-    label: "Vector length",
-    node: () => ({
-      ...emptyNode("VectorLength"),
-      uiName: "Vector Length",
-      description: "Length (magnitude) of a 3D vector",
+      ...emptyNode("VectorOperation"),
+      uiName: "Vector Operation",
+      description: "Turns a 3D vector into a number",
       extraCategory: "math:operator",
       inputs: [attr("vector", "double[3]", "[0.0, 0.0, 0.0]", "Input vector")],
-      outputs: [attr("length", "double", "", "Vector length")],
-      imports: "import math",
-      code: "x, y, z = db.inputs.vector\ndb.outputs.length = math.sqrt(x * x + y * y + z * z)",
+      outputs: [attr("value", "double", "", "Result")],
     }),
   },
-  counter: {
-    label: "Counter (Action Graph)",
+  actionNode: {
+    label: "Action Graph node",
     node: () => ({
-      ...emptyNode("TickCounter"),
-      uiName: "Tick Counter",
-      description: "Counts how many times it has been triggered",
+      ...emptyNode("ActionNode"),
+      uiName: "Action Node",
+      description: "Runs when triggered by an event such as On Playback Tick",
       extraCategory: "flowControl",
       action: true,
-      useState: true,
-      inputs: [attr("reset", "bool", "false", "Set to true to restart from zero")],
-      outputs: [attr("count", "int", "", "Number of times triggered")],
-      stateInit: "self.count = 0",
-      code: "if db.inputs.reset:\n    state.count = 0\nstate.count += 1\ndb.outputs.count = state.count",
+      inputs: [attr("enabled", "bool", "true", "Do the work only when true")],
+      outputs: [attr("count", "int", "", "Example output")],
     }),
   },
   branch: {
-    label: "Compare & branch (Action Graph)",
+    label: "Branch (two execution outputs)",
     node: () => ({
-      ...emptyNode("CompareBranch"),
-      uiName: "Compare Branch",
-      description: "Fires Is Greater when A > B, otherwise Is Not Greater",
+      ...emptyNode("BranchNode"),
+      uiName: "Branch Node",
+      description: "Chooses which execution output fires",
       extraCategory: "flowControl",
       inputs: [
         attr("execIn", "execution", "", "Signal that triggers this node", "Exec In"),
-        attr("a", "double", "0.0", "First number", "A"),
-        attr("b", "double", "0.0", "Second number", "B"),
+        attr("value", "double", "0.0", "Value to test"),
       ],
       outputs: [
-        attr("isGreater", "execution", "", "Fires when A > B", "Is Greater"),
-        attr("isNotGreater", "execution", "", "Fires when A <= B", "Is Not Greater"),
+        attr("onTrue", "execution", "", "Fires when the condition is true", "On True"),
+        attr("onFalse", "execution", "", "Fires when the condition is false", "On False"),
       ],
-      code:
-        "if db.inputs.a > db.inputs.b:\n" +
-        "    db.outputs.isGreater = og.ExecutionAttributeState.ENABLED\n" +
-        "else:\n" +
-        "    db.outputs.isNotGreater = og.ExecutionAttributeState.ENABLED",
+    }),
+  },
+  rosPublisher: {
+    label: "ROS 2 publisher",
+    node: () => ({
+      ...emptyNode("RosPublisher"),
+      uiName: "ROS 2 Publisher",
+      description: "Publishes a ROS 2 message every time it is triggered",
+      extraCategory: "function",
+      action: true,
+      ros: { ...defaultRos(), enabled: true, role: "publisher", msgType: "std_msgs/msg/Float64", topic: "/isaac/value" },
+      inputs: [attr("value", "double", "0.0", "Value to publish")],
+      outputs: [],
+    }),
+  },
+  rosSubscriber: {
+    label: "ROS 2 subscriber",
+    node: () => ({
+      ...emptyNode("RosSubscriber"),
+      uiName: "ROS 2 Subscriber",
+      description: "Reads the newest ROS 2 message every time it is triggered",
+      extraCategory: "function",
+      action: true,
+      ros: { ...defaultRos(), enabled: true, role: "subscriber", msgType: "geometry_msgs/msg/Twist", topic: "/cmd_vel" },
+      inputs: [],
+      outputs: [attr("linearX", "double", "", "Forward speed"), attr("angularZ", "double", "", "Turn rate")],
     }),
   },
   blank: {
@@ -767,14 +1053,13 @@ export const PRESETS = {
       description: "Describe what this node does",
       inputs: [attr("value", "double", "0.0", "Input value")],
       outputs: [attr("result", "double", "", "Output value")],
-      code: "db.outputs.result = db.inputs.value",
     }),
   },
 };
 
 export function projectFromPreset(key) {
   const project = defaultProject();
-  const preset = PRESETS[key] || PRESETS.multiply;
+  const preset = PRESETS[key] || PRESETS.twoInOneOut;
   project.nodes = [preset.node()];
   return project;
 }

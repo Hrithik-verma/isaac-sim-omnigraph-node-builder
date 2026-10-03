@@ -114,12 +114,12 @@ function loadInitialProject() {
   if (saved) {
     try {
       const parsed = JSON.parse(saved);
-      if (isProjectShape(parsed)) return { ...G.defaultProject(), ...parsed, extension: { ...G.defaultProject().extension, ...parsed.extension } };
+      if (isProjectShape(parsed)) return G.normalizeProject(parsed);
     } catch {
       /* ignore corrupt storage */
     }
   }
-  return G.projectFromPreset("multiply");
+  return G.projectFromPreset("twoInOneOut");
 }
 
 function scheduleSave() {
@@ -248,13 +248,17 @@ function renderEditor() {
   const nameInput = el("input", { value: node.name, spellcheck: "false", autocomplete: "off", placeholder: "MultiplyNumbers" });
   const uiInput = el("input", { value: node.uiName, placeholder: "Multiply Numbers" });
   nameInput.addEventListener("input", () => {
-    const oldAuto = G.splitWords(node.name);
+    const oldName = node.name;
+    const oldAuto = G.splitWords(oldName);
     node.name = nameInput.value.trim();
+    if (node.pythonSource && /^[A-Z][A-Za-z0-9]*$/.test(oldName) && /^[A-Z][A-Za-z0-9]*$/.test(node.name))
+      node.pythonSource = G.renameInSource(node.pythonSource, "node", oldName, node.name);
     if (!node.uiName || node.uiName === oldAuto) {
       node.uiName = G.splitWords(node.name);
       uiInput.value = node.uiName;
     }
     nameInput.classList.toggle("invalid", !/^[A-Z][A-Za-z0-9]*$/.test(node.name));
+    $("#pythonFileName") && ($("#pythonFileName").textContent = `Ogn${node.name}.py`);
     refresh();
   });
   uiInput.addEventListener("input", () => {
@@ -290,17 +294,17 @@ function renderEditor() {
     )
   );
 
-  // Toggles
+  // Options
   const actionBox = el("input", { type: "checkbox", checked: node.action });
   actionBox.addEventListener("change", () => {
     node.action = actionBox.checked;
     renderEditor();
     refresh();
   });
-  const stateBox = el("input", { type: "checkbox", checked: node.useState });
-  stateBox.addEventListener("change", () => {
-    node.useState = stateBox.checked;
-    if (node.useState && !node.stateInit) node.stateInit = "self.value = 0";
+  const rosBox = el("input", { type: "checkbox", checked: node.ros.enabled });
+  rosBox.addEventListener("change", () => {
+    node.ros.enabled = rosBox.checked;
+    if (node.ros.enabled && !node.action) node.action = true; // ROS nodes are normally ticked by an Action Graph
     renderEditor();
     refresh();
   });
@@ -312,24 +316,88 @@ function renderEditor() {
         "label",
         { class: "toggle" },
         actionBox,
-        el("span", {}, el("b", { text: "Action Graph node" }), el("small", { text: "Adds Exec In / Exec Out pins so events (On Tick, On Impulse...) can trigger it." }))
+        el("span", {}, el("b", { text: "Action Graph node" }), el("small", { text: "Adds Exec In / Exec Out pins so events (On Playback Tick, On Impulse...) trigger it." }))
       ),
       el(
         "label",
         { class: "toggle" },
-        stateBox,
-        el("span", {}, el("b", { text: "Keep state" }), el("small", { text: "Gives compute() a state object that persists between runs (counters, timers)." }))
+        rosBox,
+        el("span", {}, el("b", { text: "ROS 2" }), el("small", { text: "Publish or subscribe to a ROS 2 topic with rclpy from Isaac Sim's ROS 2 bridge." }))
       )
     )
   );
+  if (node.ros.enabled) editor.append(rosSection(node));
 
-  editor.append(attrSection(node, "inputs"), attrSection(node, "outputs"), codeSection(node));
+  editor.append(attrSection(node, "inputs"), attrSection(node, "outputs"), pythonSection(node));
+}
+
+function rosSection(node) {
+  const ros = node.ros;
+  const role = el(
+    "select",
+    {},
+    el("option", { value: "publisher", text: "Publisher (send messages)", selected: ros.role === "publisher" }),
+    el("option", { value: "subscriber", text: "Subscriber (receive messages)", selected: ros.role === "subscriber" })
+  );
+  role.addEventListener("change", () => {
+    ros.role = role.value;
+    renderEditor();
+    refresh();
+  });
+  const groups = {};
+  for (const type of Object.keys(G.ROS_MESSAGES)) (groups[type.split("/")[0]] ||= []).push(type);
+  const msg = el(
+    "select",
+    {},
+    ...Object.entries(groups).map(([pkg, types]) =>
+      el("optgroup", { label: pkg }, ...types.map((t) => el("option", { value: t, text: t.split("/").pop(), selected: t === ros.msgType })))
+    ),
+    el("option", { value: G.CUSTOM_MESSAGE, text: "Custom type...", selected: ros.msgType === G.CUSTOM_MESSAGE })
+  );
+  msg.addEventListener("change", () => {
+    ros.msgType = msg.value;
+    renderEditor();
+    refresh();
+  });
+  const topic = el("input", { value: ros.topic, spellcheck: "false", placeholder: "/my_topic" });
+  topic.addEventListener("input", () => {
+    ros.topic = topic.value.trim();
+    refresh();
+  });
+  const grid = el(
+    "div",
+    { class: "node-grid" },
+    field("Role", role),
+    field("Message type", msg),
+    field("Default topic", topic, "editable later on the node", ros.msgType === G.CUSTOM_MESSAGE ? "" : "wide")
+  );
+  if (ros.msgType === G.CUSTOM_MESSAGE) {
+    const custom = el("input", { value: ros.customType, spellcheck: "false", placeholder: "my_msgs/msg/MyType" });
+    custom.addEventListener("input", () => {
+      ros.customType = custom.value.trim();
+      refresh();
+    });
+    grid.append(field("Custom type", custom, "package/msg/Type"));
+  }
+  return el(
+    "div",
+    { class: "attr-section ros-box" },
+    el("h3", { text: "ROS 2" }),
+    grid,
+    el("p", {
+      class: "sub",
+      text:
+        "Adds a Topic Name input and the rclpy setup/cleanup code. Isaac Sim must be started with its internal ROS 2 libraries " +
+        "(not a sourced system ROS 2): see How to use." +
+        (ros.msgType === G.CUSTOM_MESSAGE ? " Custom messages must be built for Isaac Sim's Python version." : ""),
+    })
+  );
 }
 
 function attrSection(node, side) {
   const isInput = side === "inputs";
   const list = node[side];
-  const fixed = node.action ? [isInput ? G.allInputs(node)[0] : G.allOutputs(node)[0]] : [];
+  const fixed = (isInput ? G.allInputs(node) : G.allOutputs(node)).filter((a) => a.auto);
   const section = el("div", { class: "attr-section" });
   const addBtn = el("button", {
     class: "btn small",
@@ -365,14 +433,17 @@ function uniqueAttrName(node, side, base) {
 }
 
 function fixedAttrRow(attr) {
+  const by = attr.auto === "ros" ? "the ROS 2 option" : "the Action Graph option";
   return el(
     "div",
-    { class: "attr fixed", title: "Added by the Action Graph switch" },
-    el("span", { class: "pin exec", style: `background:${typeColor("execution")}` }),
+    { class: "attr fixed", title: `Added by ${by}` },
+    el("span", { class: `pin ${attr.type === "execution" ? "exec" : ""}`, style: `background:${typeColor(attr.type)}` }),
     el("input", { class: "a-name", value: attr.name, disabled: true }),
-    el("input", { class: "a-type", value: "execution", disabled: true }),
-    el("input", { class: "a-def", value: "", disabled: true, placeholder: "automatic" }),
-    el("span", { class: "btns" })
+    el("input", { class: "a-type", value: attr.type, disabled: true }),
+    el("input", { class: "a-def", value: attr.type === "execution" ? "" : attr.default, disabled: true, placeholder: "automatic" }),
+    el("span", { class: "btns" }),
+    el("input", { class: "a-label", value: attr.uiName, disabled: true }),
+    el("input", { class: "a-desc", value: `Added by ${by}`, disabled: true })
   );
 }
 
@@ -408,7 +479,11 @@ function attrRow(node, side, attr, index) {
   syncDefaultState();
 
   name.addEventListener("input", () => {
+    const oldName = attr.name;
     attr.name = name.value.trim();
+    // Keep the user's own code in step with the rename.
+    if (node.pythonSource && /^[a-z][A-Za-z0-9_]*$/.test(oldName) && /^[a-z][A-Za-z0-9_]*$/.test(attr.name))
+      node.pythonSource = G.renameInSource(node.pythonSource, side, oldName, attr.name);
     label.placeholder = G.splitWords(attr.name) || "Label";
     name.classList.toggle("invalid", !/^[a-z][A-Za-z0-9_]*$/.test(attr.name));
     refresh();
@@ -463,95 +538,73 @@ function attrRow(node, side, attr, index) {
   return el("div", { class: "attr" }, pin, name, type, def, btns, label, desc);
 }
 
-function codeArea(value, rows, onInput, placeholder) {
-  const ta = el("textarea", { class: "code", rows: String(rows), spellcheck: "false", placeholder: placeholder || "" });
-  ta.value = value || "";
-  ta.addEventListener("input", () => onInput(ta.value));
-  ta.addEventListener("keydown", (e) => {
-    const { selectionStart: s, selectionEnd: end, value: v } = ta;
-    if (e.key === "Tab") {
-      e.preventDefault();
-      if (e.shiftKey) {
-        const lineStart = v.lastIndexOf("\n", s - 1) + 1;
-        const remove = v.slice(lineStart, lineStart + 4).match(/^ {1,4}/)?.[0].length || 0;
-        if (remove) {
-          ta.setRangeText("", lineStart, lineStart + remove, "preserve");
-        }
-      } else {
-        ta.setRangeText("    ", s, end, "end");
-      }
-      onInput(ta.value);
-    } else if (e.key === "Enter" && !e.ctrlKey && !e.metaKey) {
-      const lineStart = v.lastIndexOf("\n", s - 1) + 1;
-      const line = v.slice(lineStart, s);
-      let pad = line.match(/^ */)[0];
-      if (/:\s*$/.test(line)) pad += "    ";
-      e.preventDefault();
-      ta.setRangeText("\n" + pad, s, end, "end");
-      onInput(ta.value);
-    }
+function showFile(path) {
+  currentFile = path;
+  document.querySelector('.tab[data-tab="files"]').click();
+  refresh();
+}
+
+function pythonSection(node) {
+  const kept = node.pythonSource !== null && node.pythonSource !== undefined;
+  const fileName = el("code", { id: "pythonFileName", text: `Ogn${node.name}.py` });
+  const view = el("button", {
+    class: "btn small",
+    text: "View file",
+    onclick: () => showFile(`${project.extension.name}/${G.modulePath(project.extension.name)}/nodes/Ogn${node.name}.py`),
   });
-  return ta;
-}
-
-function insertAtCursor(ta, text) {
-  ta.focus();
-  ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, "end");
-  ta.dispatchEvent(new Event("input"));
-}
-
-function codeSection(node) {
-  const wrap = el("div", { class: "attr-section" }, el("h3", { text: "Python code" }));
-
-  const imports = codeArea(node.imports, 2, (v) => {
-    node.imports = v;
-    refresh();
-  }, "# e.g. import math");
-  wrap.append(
-    el("p", { class: "sub", text: "Extra imports (optional)" }),
-    el("div", { class: "code-block" }, el("div", { class: "ctx", text: "import omni.graph.core as og" }), imports)
+  const reset = kept
+    ? el("button", {
+        class: "btn small danger",
+        text: "Reset to template",
+        onclick: () => {
+          if (!confirm(`Replace your code in Ogn${node.name}.py with a fresh template?\nYour current code in the builder will be lost (files on disk are not touched until you save).`)) return;
+          node.pythonSource = null;
+          renderEditor();
+          refresh();
+        },
+      })
+    : null;
+  const steps = el(
+    "ol",
+    { class: "steps" },
+    el("li", {}, el("b", { text: "Read inputs" }), " every input is read into a variable"),
+    el("li", {}, el("b", { text: "Your computation" }), " write your logic here; use ", el("code", { text: "state" }), " for values that persist"),
+    el("li", {}, el("b", { text: "Write outputs" }), " every output is written from a variable")
   );
-
-  if (node.useState) {
-    const state = codeArea(node.stateInit, 2, (v) => {
-      node.stateInit = v;
-      refresh();
-    }, "self.count = 0");
-    wrap.append(
-      el("p", { class: "sub", text: "State: set starting values on self (read them as state.<name> in compute)" }),
-      el("div", { class: "code-block" }, el("div", { class: "ctx", text: `class Ogn${node.name}InternalState:\n    def __init__(self):` }), state)
-    );
-  }
-
-  const body = codeArea(node.code, Math.max(5, String(node.code).split("\n").length + 1), (v) => {
-    node.code = v;
-    refresh();
-  }, "db.outputs.result = db.inputs.value");
-  const chips = el("div", { class: "chips" });
-  const addChip = (text) => chips.append(el("button", { class: "chip", text, title: "Insert", onclick: () => insertAtCursor(body, text) }));
-  G.allInputs(node).filter((a) => a.type !== "execution" && a.name).forEach((a) => addChip(`db.inputs.${a.name}`));
-  G.allOutputs(node).filter((a) => a.name).forEach((a) =>
-    addChip(a.type === "execution" ? `db.outputs.${a.name} = og.ExecutionAttributeState.ENABLED` : `db.outputs.${a.name} = `)
+  return el(
+    "div",
+    { class: `attr-section python-box ${kept ? "kept" : ""}` },
+    el("h3", {}, el("span", {}, "Python file ", fileName), el("span", { class: "btns" }, view, reset)),
+    kept
+      ? el(
+          "p",
+          { class: "sub" },
+          el("b", { text: "Your code is kept as-is. " }),
+          "It came from the extension you opened. The builder never rewrites it; renaming a node, input or output here also renames ",
+          el("code", { text: "Ogn<Name>" }),
+          " / ",
+          el("code", { text: "db.inputs.<name>" }),
+          " in it. Checks warns if it uses names that no longer exist."
+        )
+      : el(
+          "p",
+          { class: "sub" },
+          el("b", { text: "Starting template, like the Isaac Sim VS Code template. " }),
+          "It follows your inputs and outputs and has a ",
+          el("code", { text: "compute()" }),
+          " with three steps. Write your own logic in your editor after downloading; nothing is assumed:"
+        ),
+    kept ? null : steps
   );
-  if (node.useState) addChip("state.");
-  addChip('db.log_warning("message")');
-
-  const before = `@staticmethod\ndef compute(db) -> bool:${node.useState ? "\n    state = db.internal_state" : ""}\n    try:`;
-  const after =
-    (node.action ? "        db.outputs.execOut = og.ExecutionAttributeState.ENABLED  # added for you\n" : "") +
-    "    except Exception as error:\n        db.log_error(...)\n        return False\n    return True";
-  wrap.append(
-    el("p", { class: "sub", text: "compute(): runs every time the node evaluates. Click a chip to insert it." }),
-    chips,
-    el("div", { class: "code-block" }, el("div", { class: "ctx", text: before }), body, el("div", { class: "ctx", text: after }))
-  );
-  return wrap;
 }
 
 function duplicateNode() {
   const copy = JSON.parse(JSON.stringify(currentNode()));
+  const oldName = copy.name;
   copy.name = uniqueNodeName(copy.name);
   copy.uiName = G.splitWords(copy.name);
+  if (copy.pythonSource) copy.pythonSource = G.renameInSource(copy.pythonSource, "node", oldName, copy.name);
+  copy.pythonOriginal = null;
   project.nodes.splice(selected + 1, 0, copy);
   selectNode(selected + 1);
 }
@@ -717,6 +770,10 @@ function renderFiles(files) {
     code.textContent = "(PNG image, generated when you download)";
     return;
   }
+  const owner = file.owner === "user"
+    ? file.node && project.nodes.find((n) => n.name === file.node)?.pythonSource ? "your code, kept as-is" : "starting template, yours to edit"
+    : "generated from the form";
+  $("#fileName").textContent = `${file.path}  (${owner})`;
   const lang = languageFor(file.path);
   if (window.hljs && lang && hljs.getLanguage(lang)) code.innerHTML = hljs.highlight(file.content, { language: lang }).value;
   else code.textContent = file.content;
@@ -763,7 +820,25 @@ manager.set_extension_enabled_immediate("${esc(ext.name)}", True)</pre>
       <thead><tr><th>Isaac Sim</th><th>Kit</th><th>Python</th><th>Status</th></tr></thead>
       <tbody>${G.SUPPORTED_VERSIONS.map((v) => `<tr><td>${esc(v.label)}</td><td>${v.kit}</td><td>${v.python}</td><td>${esc(v.status)}</td></tr>`).join("")}</tbody>
     </table>
-    <p class="hint" style="margin-top:10px">Python nodes only. C++ nodes always need a compiled build.</p>`;
+    <p class="hint" style="margin-top:10px">Python nodes only. C++ nodes always need a compiled build.</p>
+    ${G.usesRos(project) ? rosHelp() : ""}`;
+}
+
+function rosHelp() {
+  return `
+    <h3 class="panel-title">Starting Isaac Sim for ROS 2 nodes</h3>
+    <p class="hint">Isaac Sim's Python (3.11 in 5.x, 3.12 in 6.x / 7.0) cannot use a system ROS 2 such as Humble (Python 3.10).
+    Start Isaac Sim from a terminal where ROS 2 is <b>not</b> sourced, using its internal ROS 2 libraries:</p>
+    <pre>export ROS_DISTRO=humble                    # or jazzy
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+ISAAC=$(python -c "import isaacsim, os; print(os.path.dirname(isaacsim.__file__))")
+# Isaac Sim 6.x / 7.0
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$ISAAC/exts/isaacsim.ros2.core/humble/lib
+# Isaac Sim 5.x
+# export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$ISAAC/exts/isaacsim.ros2.bridge/humble/lib
+isaacsim</pre>
+    <p class="hint">If ROS 2 is not set up, the node still loads and its error message explains this. Use
+    <code>ros2 topic echo</code> / <code>rviz2</code> from a normal, sourced terminal (same <code>ROS_DOMAIN_ID</code>).</p>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -913,49 +988,72 @@ async function writeToFolder() {
     strip = 1;
     location = parent.name;
     searchPath = "the folder that contains it";
-  } else {
-    let existing = null;
-    try {
-      existing = await parent.getDirectoryHandle(extName);
-    } catch {
-      existing = null;
-    }
-    if (existing) {
-      if (!confirm(`"${extName}" already exists in "${parent.name}".\nOverwrite the generated files?`)) return;
-    }
   }
 
-  // Old Ogn*.ogn / Ogn*.py files for nodes that no longer exist would still register.
+  // A stale Ogn*.ogn (node removed or renamed here) would still register in Isaac Sim.
+  // Only .ogn files are removed; .py files are yours and are never deleted.
   const nodesParts = [...(strip ? [] : [extName]), ...G.modulePath(extName).split("/"), "nodes"];
   const keep = new Set(files.map((f) => f.path.split("/").pop()));
-  const stale = [];
   try {
     let nodesDir = root;
     for (const p of nodesParts) nodesDir = await nodesDir.getDirectoryHandle(p);
+    const stale = [];
     for await (const [name, handle] of nodesDir.entries()) {
-      if (handle.kind === "file" && /^Ogn.+\.(ogn|py)$/.test(name) && !keep.has(name)) stale.push(name);
+      if (handle.kind === "file" && /^Ogn.+\.ogn$/.test(name) && !keep.has(name)) stale.push(name);
     }
-    if (stale.length && confirm(`These node files are not in the builder anymore:\n\n${stale.join("\n")}\n\nDelete them? (Cancel keeps them.)`)) {
+    if (stale.length && confirm(`These node definitions are no longer in the builder:\n\n${stale.join("\n")}\n\nRemove them so Isaac Sim stops loading those nodes?\n(Their .py files are kept.)`)) {
       for (const name of stale) await nodesDir.removeEntry(name);
     }
   } catch {
     /* nodes folder does not exist yet */
   }
 
+  const written = [];
+  const kept = [];
   try {
     for (const f of files) {
       const parts = f.path.split("/").slice(strip);
       const dir = await getDir(root, parts.slice(0, -1));
-      const handle = await dir.getFileHandle(parts[parts.length - 1], { create: true });
+      const fileName = parts[parts.length - 1];
+      if (f.owner === "user") {
+        const onDisk = await readExisting(dir, fileName, typeof f.content === "string");
+        if (onDisk !== null) {
+          const node = f.node ? project.nodes.find((n) => n.name === f.node) : null;
+          // Update a .py only when it is still exactly what the builder opened (e.g. to apply a rename here).
+          const safeUpdate = node && node.pythonOriginal !== null && onDisk === node.pythonOriginal && onDisk !== f.content;
+          if (!safeUpdate) {
+            if (onDisk !== f.content && typeof f.content === "string") kept.push(parts.join("/"));
+            continue;
+          }
+        }
+      }
+      const handle = await dir.getFileHandle(fileName, { create: true });
       const writable = await handle.createWritable();
       await writable.write(f.content);
       await writable.close();
+      written.push(parts.join("/"));
+      const node = f.node ? project.nodes.find((n) => n.name === f.node) : null;
+      if (node) node.pythonOriginal = f.content;
     }
   } catch (e) {
     toast(`Saving failed: ${e.message}`, "error", 7000);
     return;
   }
-  toast(`Saved ${files.length} files to ${location}\nIn Isaac Sim add ${searchPath === parent.name ? `"${searchPath}"` : searchPath} as an Extension Search Path.`, "info", 8000);
+  const keptNote = kept.filter((p) => p.endsWith(".py")).length
+    ? `\nKept your existing ${kept.filter((p) => p.endsWith(".py")).map((p) => p.split("/").pop()).join(", ")} unchanged.`
+    : "";
+  toast(`Saved ${written.length} files to ${location}${keptNote}\nIn Isaac Sim add ${searchPath === parent.name ? `"${searchPath}"` : searchPath} as an Extension Search Path.`, "info", 9000);
+  scheduleSave();
+}
+
+// Text (or bytes) of an existing file, or null if it does not exist.
+async function readExisting(dir, name, asText) {
+  try {
+    const file = await (await dir.getFileHandle(name)).getFile();
+    return asText ? await file.text() : new Uint8Array(await file.arrayBuffer());
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -984,7 +1082,7 @@ function applyImport(files, pickedName) {
   try {
     const { project: imported, warnings } = G.importProject(relative, folderName);
     if (!isProjectShape(imported)) throw new Error("unrecognised project");
-    project = { ...G.defaultProject(), ...imported, extension: { ...G.defaultProject().extension, ...imported.extension } };
+    project = G.normalizeProject(imported);
     selected = 0;
     currentFile = null;
     renderAll();

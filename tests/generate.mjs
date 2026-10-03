@@ -1,19 +1,15 @@
-// Generates a test extension containing every preset node, checks validation
-// and the import round trip, and writes the files to disk for Isaac Sim tests.
+// Generator tests + writes a test extension for tests/isaacsim_check.py.
 //
 // Usage: node tests/generate.mjs <output-dir>
+//
+// The written extension contains every preset as an untouched template, plus
+// nodes whose .py was "edited by the user" (pythonSource) so Isaac Sim can
+// check real results, including a ROS 2 publisher -> subscriber round trip.
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import assert from "node:assert/strict";
-import {
-  PRESETS,
-  defaultProject,
-  generateFiles,
-  importProject,
-  validateProject,
-  emptyNode,
-} from "../assets/generator.js";
+import * as G from "../assets/generator.js";
 
 const outDir = process.argv[2];
 if (!outDir) {
@@ -21,56 +17,125 @@ if (!outDir) {
   process.exit(2);
 }
 
-// 1. Every preset in one extension
-const project = defaultProject();
+const edit = (source, from, to) => {
+  assert.ok(source.includes(from), `template should contain: ${from}`);
+  return source.replace(from, to);
+};
+
+// 1. Presets validate and templates never assume logic
+const project = G.defaultProject();
 project.extension.name = "builder.test.nodes";
 project.extension.title = "Builder Test Nodes";
 project.extension.authors = "Tester";
-project.nodes = Object.values(PRESETS).map((p) => p.node());
-const { errors, warnings } = validateProject(project);
-assert.deepEqual(errors, [], "presets must validate");
-console.log(`presets: ${project.nodes.length} nodes valid, warnings: ${warnings.length}`);
+project.nodes = Object.values(G.PRESETS).map((p) => p.node());
+let result = G.validateProject(project);
+assert.deepEqual(result.errors, [], "presets must validate");
+for (const node of project.nodes) {
+  const py = G.pythonTemplate(project, node);
+  assert.ok(py.includes(`class Ogn${node.name}InternalState:`), `${node.name}: internal state class`);
+  assert.ok(py.includes("# 2. Do your custom computation here"), `${node.name}: computation placeholder`);
+  for (const a of node.inputs.filter((x) => x.type !== "execution")) assert.ok(py.includes(`= db.inputs.${a.name}`), `${node.name}: reads ${a.name}`);
+  for (const a of node.outputs.filter((x) => x.type !== "execution")) assert.ok(py.includes(`db.outputs.${a.name} = `), `${node.name}: writes ${a.name}`);
+}
+console.log(`presets: ${project.nodes.length} nodes valid; templates read every input and write every output`);
 
-// 2. Validation catches common mistakes
-const bad = defaultProject();
+// 2. The reported bug: renamed attributes must be reflected in the template
+const abc = { ...G.emptyNode("ABC"), uiName: "ABC", description: "add 2 number", action: true };
+abc.inputs = [
+  { name: "am", uiName: "", type: "double", default: "0.0", description: "" },
+  { name: "bm", uiName: "", type: "double", default: "0.0", description: "" },
+];
+abc.outputs = [{ name: "addition", uiName: "", type: "double", default: "", description: "" }];
+const abcPy = G.pythonTemplate({ ...project, nodes: [abc] }, abc);
+assert.ok(abcPy.includes("am = db.inputs.am") && abcPy.includes("bm = db.inputs.bm"));
+assert.ok(abcPy.includes("db.outputs.addition = addition"));
+assert.ok(!/db\.inputs\.a\b|db\.outputs\.product/.test(abcPy), "no stale names");
+assert.ok(abcPy.includes("db.outputs.execOut = og.ExecutionAttributeState.ENABLED"));
+console.log("ABC case: template uses am, bm, addition");
+
+// 3. Validation catches mistakes, including user code that drifted from the .ogn
+const bad = G.defaultProject();
 bad.extension.name = "Bad Name";
-const n = emptyNode("lowercase");
-n.inputs = [{ name: "1x", type: "double", default: "abc", uiName: "", description: "" }];
-n.outputs = [{ name: "class", type: "double", default: "", uiName: "", description: "" }];
-const n2 = { ...emptyNode("Dup"), action: true, inputs: [{ name: "execIn", type: "execution", default: "" }] };
-const n3 = { ...emptyNode("Vec"), inputs: [{ name: "v", type: "double[3]", default: "[1, 2]" }] };
-bad.nodes = [n, n2, n3];
-const badResult = validateProject(bad);
-const expect = ["dotted Python identifiers", "PascalCase", "lowercase letter", "Python keyword", "Action Graph switch", "list of 3 numbers"];
-for (const e of expect) assert.ok(badResult.errors.some((m) => m.includes(e)), `expected error containing "${e}"`);
-console.log(`validation: ${badResult.errors.length} errors caught as expected`);
+const n1 = { ...G.emptyNode("lowercase"), inputs: [{ name: "1x", type: "double", default: "abc" }], outputs: [{ name: "class", type: "double" }] };
+const n2 = { ...G.emptyNode("Dup"), action: true, inputs: [{ name: "execIn", type: "execution", default: "" }] };
+const n3 = { ...G.emptyNode("Vec"), inputs: [{ name: "v", type: "double[3]", default: "[1, 2]" }] };
+const n4 = { ...abc, name: "Drift", pythonSource: "class OgnDrift:\n    def compute(db):\n        db.outputs.product = db.inputs.a\n" };
+const n5 = { ...abc, name: "Renamed", pythonSource: "class OgnOldName:\n    pass\n" };
+const n6 = { ...G.emptyNode("Ros"), action: true, ros: { ...G.defaultRos(), enabled: true, msgType: "custom", customType: "bad type" } };
+bad.nodes = [n1, n2, n3, n4, n5, n6];
+const badResult = G.validateProject(bad);
+for (const e of ["dotted Python identifiers", "PascalCase", "lowercase letter", "Python keyword", "Action Graph option", "list of 3 numbers", 'no "class OgnRenamed"', "package/msg/Type"])
+  assert.ok(badResult.errors.some((m) => m.includes(e)), `expected error containing "${e}"`);
+for (const w of ["uses db.inputs.a, which is not an input", "uses db.outputs.product, which is not an output"])
+  assert.ok(badResult.warnings.some((m) => m.includes(w)), `expected warning containing "${w}"`);
+console.log(`validation: ${badResult.errors.length} errors, ${badResult.warnings.length} warnings caught as expected`);
 
-// 3. Write files
-const files = generateFiles(project);
+// 4. Renames in the GUI follow into the user's code
+let src = "class OgnABC:\n    x = db.inputs.am + db.inputs.amb\nstate = OgnABCInternalState()\nfrom m.ogn.OgnABCDatabase import OgnABCDatabase\n";
+src = G.renameInSource(src, "inputs", "am", "alpha");
+assert.ok(src.includes("db.inputs.alpha + db.inputs.amb"), "only exact attribute names are renamed");
+src = G.renameInSource(src, "node", "ABC", "Adder");
+assert.ok(src.includes("class OgnAdder:") && src.includes("OgnAdderInternalState") && src.includes("OgnAdderDatabase"));
+console.log("renames: attribute and class renames applied to user code");
+
+// 5. User-edited nodes for the Isaac Sim run
+const math = project.nodes.find((n) => n.name === "MathOperation");
+math.pythonSource = edit(G.pythonTemplate(project, math), "            result = 0.0", "            result = a * b");
+
+const pub = project.nodes.find((n) => n.name === "RosPublisher");
+pub.ros.topic = "/builder_test/value";
+pub.pythonSource = edit(G.pythonTemplate(project, pub), "            msg.data = 0.0", "            msg.data = value");
+
+const sub = {
+  ...G.emptyNode("FloatSubscriber"),
+  uiName: "Float Subscriber",
+  action: true,
+  ros: { ...G.defaultRos(), enabled: true, role: "subscriber", msgType: "std_msgs/msg/Float64", topic: "/builder_test/value" },
+  outputs: [{ name: "received", uiName: "", type: "double", default: "", description: "Last value" }],
+};
+sub.pythonSource = edit(
+  G.pythonTemplate(project, sub),
+  "            received = 0.0",
+  "            received = msg.data if msg is not None else -1.0"
+);
+project.nodes.push(sub);
+result = G.validateProject(project);
+assert.deepEqual(result.errors, []);
+
+// 6. Write files
+const files = G.generateFiles(project);
 for (const f of files) {
   const p = join(outDir, f.path);
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, f.content);
 }
+assert.ok(files.find((f) => f.path.endsWith("extension.toml")).content.includes('"isaacsim.ros2.bridge" = {}'));
+assert.ok(files.every((f) => f.owner === "builder" || f.owner === "user"));
+assert.ok(!files.find((f) => f.path.endsWith(G.PROJECT_FILE)).content.includes("result = a * b"), "project file has no code copies");
 console.log(`wrote ${files.length} files to ${outDir}/${project.extension.name}`);
 
-// 4. Import round trip without the project file (edited-by-hand case)
+// 7. Re-open without the project file: edited .py kept verbatim, untouched templates stay templates, ROS detected
 const textFiles = {};
 for (const f of files) {
-  if (typeof f.content !== "string" || f.path.endsWith(".ogn-builder.json")) continue;
+  if (typeof f.content !== "string" || f.path.endsWith(G.PROJECT_FILE)) continue;
   textFiles[f.path.slice(project.extension.name.length + 1)] = f.content;
 }
-const { project: back, warnings: importWarnings } = importProject(textFiles, project.extension.name);
-assert.deepEqual(importWarnings, []);
+const { project: back, warnings } = G.importProject(textFiles, project.extension.name);
+assert.deepEqual(warnings, []);
 assert.equal(back.extension.name, project.extension.name);
-assert.equal(back.extension.title, project.extension.title);
 assert.equal(back.nodes.length, project.nodes.length);
 for (const orig of project.nodes) {
   const got = back.nodes.find((x) => x.name === orig.name);
   assert.ok(got, `node ${orig.name} imported`);
-  for (const key of ["code", "imports", "action", "useState", "stateInit", "uiName", "extraCategory"])
-    assert.deepEqual(got[key], orig[key], `${orig.name}.${key}`);
+  assert.equal(got.pythonSource, orig.pythonSource ?? null, `${orig.name}: python ownership`);
+  assert.equal(got.action, orig.action, `${orig.name}.action`);
+  assert.equal(got.ros.enabled, orig.ros.enabled, `${orig.name}.ros.enabled`);
+  if (orig.ros.enabled) {
+    assert.equal(got.ros.role, orig.ros.role, `${orig.name}.ros.role`);
+    assert.equal(G.rosMessageType(got), G.rosMessageType(orig), `${orig.name} msg type`);
+    assert.equal(got.ros.topic, orig.ros.topic, `${orig.name} topic`);
+  }
   assert.deepEqual(got.inputs.map((a) => [a.name, a.type]), orig.inputs.map((a) => [a.name, a.type]), `${orig.name} inputs`);
   assert.deepEqual(got.outputs.map((a) => [a.name, a.type]), orig.outputs.map((a) => [a.name, a.type]), `${orig.name} outputs`);
 }
-console.log("import round trip: OK");
+console.log("re-open: user code kept verbatim, templates still generated, ROS settings detected");

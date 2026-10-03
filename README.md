@@ -6,18 +6,25 @@
 
 ![OmniGraph Node Builder screenshot](docs/screenshot.png)
 
-Pick inputs and outputs, write the `compute()` code, preview how the node looks in the Action Graph editor, and
-download a ready-to-load extension. Isaac Sim loads it directly: no premake, no `repo build`, no C++ toolchain.
+Pick inputs and outputs, preview how the node looks in the Action Graph editor, and download a ready-to-load
+extension with a Python starting template for every node. Then write your own logic: the builder assumes nothing
+about it and never overwrites your code. Isaac Sim loads it directly: no premake, no `repo build`, no C++ toolchain.
 
 ## Features
 
 - Visual editor for node inputs/outputs: scalars, vectors, colors, quaternions, arrays, execution pins
-- **Action Graph switch** adds Exec In / Exec Out pins so events (On Playback Tick, On Impulse...) trigger your node
-- **Keep state** option for counters, timers and anything that must persist between evaluations
+- **Python starting template** per node, in the style of the Isaac Sim VS Code extension template: an internal
+  state class and a `compute()` that (1) reads every input, (2) leaves room for your computation, (3) writes every
+  output. It always matches the inputs/outputs you defined.
+- **Your code stays yours**: re-open an extension and its `.py` files are kept verbatim. Renaming a node or attribute
+  in the GUI also renames it in your code; Checks warns when your code uses names that no longer exist.
+  *Save to folder* never overwrites a `.py` you changed.
+- **Action Graph option** adds Exec In / Exec Out pins so events (On Playback Tick, On Impulse...) trigger your node
+- **ROS 2 option**: publisher or subscriber with a Topic Name input, message type (std_msgs, geometry_msgs,
+  sensor_msgs or custom) and the rclpy setup/cleanup code, using Isaac Sim's ROS 2 bridge
 - Live preview of the node and its Property panel, plus every generated file
-- Several nodes per extension; examples for multiply, add, clamp, vector length, counter, compare & branch
+- Several nodes per extension; starting layouts for math, vector, action, branch, ROS 2 publisher / subscriber
 - **Download .zip** (any browser) or **Save to folder** (Chrome / Edge / Opera)
-- **Open** an existing extension (folder or .zip) to keep editing it with the GUI; your Python code is kept
 - Validation for names, types and default values before export
 - Runs fully in the browser; nothing is uploaded
 
@@ -30,8 +37,22 @@ download a ready-to-load extension. Isaac Sim loads it directly: no premake, no 
 | 6.1 | 110.3 | 3.12 | Tested |
 | 7.0 (alpha) | 110.3 | 3.12 | Same Kit as 6.1 |
 
-"Tested" means the generated example nodes were loaded and run in headless Isaac Sim, including Action Graph
-execution (see [tests](#tests)). Python nodes only; C++ nodes always need a compiled build.
+"Tested" means generated nodes were loaded and run in headless Isaac Sim, including Action Graph execution and a
+ROS 2 publisher -> subscriber round trip (see [tests](#tests)). Python nodes only; C++ nodes always need a compiled build.
+
+### ROS 2 nodes
+
+Isaac Sim's Python (3.11 / 3.12) cannot use a system ROS 2 such as Humble (Python 3.10). Start Isaac Sim from a
+terminal where ROS 2 is **not** sourced, with its internal ROS 2 libraries:
+
+```bash
+export ROS_DISTRO=humble RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+ISAAC=$(python -c "import isaacsim, os; print(os.path.dirname(isaacsim.__file__))")
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$ISAAC/exts/isaacsim.ros2.core/humble/lib     # 6.x / 7.0
+# export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$ISAAC/exts/isaacsim.ros2.bridge/humble/lib # 5.x
+```
+
+If ROS 2 is not available the node still loads, and its error message says what to do.
 
 ## Use a generated extension
 
@@ -40,7 +61,7 @@ execution (see [tests](#tests)). Python nodes only; C++ nodes always need a comp
    (the **parent** folder).
 3. Enable the extension, then find your nodes in **Window > Graph Editors > Action Graph**.
 
-Change node logic in `Ogn<Node>.py` between the `BEGIN/END USER CODE` markers; Isaac Sim reloads it while running.
+Write your logic in `Ogn<Node>.py` (step 2 of `compute()`); Isaac Sim reloads it while running.
 
 ## How it works
 
@@ -55,8 +76,8 @@ my.omnigraph.examples/
 ├── my/omnigraph/examples/
 │   ├── __init__.py
 │   └── nodes/
-│       ├── OgnMultiplyNumbers.ogn
-│       ├── OgnMultiplyNumbers.py
+│       ├── OgnMathOperation.ogn
+│       ├── OgnMathOperation.py         starting template, yours to edit
 │       ├── config/CategoryDefinition.json
 │       └── icons/icon.svg
 └── .ogn-builder.json              lets the builder re-open the project
@@ -80,7 +101,7 @@ python3 -m http.server 8000      # then open http://localhost:8000
 ```bash
 node tests/generate.mjs /tmp/ogn_out
 conda activate isaacsim6            # any Isaac Sim pip environment
-python tests/isaacsim_check.py /tmp/ogn_out builder.test.nodes
+python tests/isaacsim_check.py /tmp/ogn_out builder.test.nodes           # add --ros with the ROS 2 setup above
 ```
 
 ## Contributing
