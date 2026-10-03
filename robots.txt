@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://hrithik-verma.github.io/isaac-sim-omnigraph-node-builder/sitemap.xml
