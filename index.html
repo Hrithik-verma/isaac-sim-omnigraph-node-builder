@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Isaac Sim OmniGraph Node Builder | Create Action Graph Python Nodes Online</title>
+  <meta name="description" content="Free web tool to create Isaac Sim OmniGraph and Action Graph Python node extensions with a GUI. Pick inputs and outputs, write compute code, download a ready-to-load extension. No build step. Works with Isaac Sim 5.x, 6.x and 7.0.">
+  <meta name="keywords" content="Isaac Sim, OmniGraph, Action Graph, custom node, Python node, Omniverse extension, .ogn, node generator, robotics">
+  <meta name="author" content="Hrithik Verma">
+  <link rel="canonical" href="https://hrithik-verma.github.io/isaac-sim-omnigraph-node-builder/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Isaac Sim OmniGraph Node Builder">
+  <meta property="og:description" content="Create Isaac Sim Action Graph / OmniGraph Python nodes with a GUI. No build step.">
+  <meta property="og:url" content="https://hrithik-verma.github.io/isaac-sim-omnigraph-node-builder/">
+  <meta property="og:image" content="https://hrithik-verma.github.io/isaac-sim-omnigraph-node-builder/assets/social-preview.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="theme-color" content="#0f1419">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-dark">
+  <link rel="stylesheet" href="assets/style.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Isaac Sim OmniGraph Node Builder",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Web browser",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "description": "Create Isaac Sim OmniGraph / Action Graph Python node extensions with a GUI. No build step.",
+    "author": { "@type": "Person", "name": "Hrithik Verma", "url": "https://github.com/Hrithik-verma" },
+    "url": "https://hrithik-verma.github.io/isaac-sim-omnigraph-node-builder/"
+  }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="OmniGraph Node Builder home">
+      <img src="assets/favicon.svg" alt="" width="32" height="32">
+      <div>
+        <h1>OmniGraph Node Builder</h1>
+        <small>for Isaac Sim &middot; Python nodes &middot; no build</small>
+      </div>
+    </a>
+    <div class="actions">
+      <label class="select-wrap" title="Start from an example">
+        <span class="sr-only">Load example</span>
+        <select id="presetSelect">
+          <option value="">Load example&hellip;</option>
+        </select>
+      </label>
+      <div class="menu" id="importMenu">
+        <button class="btn" id="importBtn" aria-haspopup="true" aria-expanded="false">Open&hellip;</button>
+        <div class="menu-list" role="menu" hidden>
+          <button role="menuitem" id="importFolderBtn">Extension folder&hellip;</button>
+          <button role="menuitem" id="importZipBtn">Extension .zip&hellip;</button>
+        </div>
+      </div>
+      <input type="file" id="zipInput" accept=".zip,application/zip" hidden>
+      <button class="btn" id="writeFolderBtn" title="Write the extension into a folder on your computer (Chrome / Edge)">Save to folder</button>
+      <button class="btn primary" id="downloadBtn">Download .zip</button>
+      <button class="btn icon" id="themeBtn" title="Toggle light / dark" aria-label="Toggle light or dark theme">&#9680;</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <section class="card">
+        <h2>Extension</h2>
+        <label class="field">
+          <span>Extension name <em>folder + Python module</em></span>
+          <input id="extName" spellcheck="false" autocomplete="off" placeholder="my.robot.nodes">
+        </label>
+        <label class="field">
+          <span>Title <em>shown in Extension Manager</em></span>
+          <input id="extTitle" placeholder="My Robot Nodes">
+        </label>
+        <div class="row2">
+          <label class="field">
+            <span>Version</span>
+            <input id="extVersion" spellcheck="false" placeholder="0.1.0">
+          </label>
+          <label class="field">
+            <span>Author(s)</span>
+            <input id="extAuthors" placeholder="Your name">
+          </label>
+        </div>
+        <label class="field">
+          <span>Description</span>
+          <input id="extDescription" placeholder="What these nodes do">
+        </label>
+        <details class="more">
+          <summary>Node category</summary>
+          <div class="row2">
+            <label class="field">
+              <span>Category id</span>
+              <input id="extNodeCategory" spellcheck="false" placeholder="myNodes">
+            </label>
+            <label class="field">
+              <span>Category label</span>
+              <input id="extNodeCategoryDescription" placeholder="My custom nodes">
+            </label>
+          </div>
+        </details>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Nodes</h2>
+          <div class="menu" id="addNodeMenu">
+            <button class="btn small" id="addNodeBtn" aria-haspopup="true" aria-expanded="false">+ Add node</button>
+            <div class="menu-list right" role="menu" hidden></div>
+          </div>
+        </div>
+        <ul class="node-list" id="nodeList"></ul>
+      </section>
+
+      <section class="card checks" id="checksCard">
+        <h2>Checks</h2>
+        <ul id="checksList"></ul>
+      </section>
+    </aside>
+
+    <section class="editor card" id="editor" aria-label="Node editor"></section>
+
+    <section class="preview card">
+      <div class="tabs" role="tablist">
+        <button role="tab" class="tab active" data-tab="look" aria-selected="true">In Isaac Sim</button>
+        <button role="tab" class="tab" data-tab="files" aria-selected="false">Files</button>
+        <button role="tab" class="tab" data-tab="use" aria-selected="false">How to use</button>
+      </div>
+      <div class="tab-panel" data-panel="look">
+        <p class="hint">Approximate look of the node in the Action Graph editor and its inputs in the Property panel.</p>
+        <div class="graph-canvas" id="nodePreview"></div>
+        <div class="legend" id="legend"></div>
+        <h3 class="panel-title">Property panel</h3>
+        <div class="property-panel" id="propertyPreview"></div>
+      </div>
+      <div class="tab-panel" data-panel="files" hidden>
+        <div class="files">
+          <ul class="file-tree" id="fileTree"></ul>
+          <div class="file-view">
+            <div class="file-view-head">
+              <code id="fileName"></code>
+              <button class="btn small" id="copyFileBtn">Copy</button>
+            </div>
+            <pre><code id="fileCode"></code></pre>
+          </div>
+        </div>
+      </div>
+      <div class="tab-panel use" data-panel="use" hidden id="usePanel"></div>
+    </section>
+  </main>
+
+  <section class="about" aria-label="About this tool">
+    <div class="about-inner">
+      <div class="card">
+        <h2>What it makes</h2>
+        <p>A ready-to-load <strong>Isaac Sim OmniGraph extension</strong> with one or more Python nodes for the
+          <strong>Action Graph</strong> or Push Graph. Pick inputs and outputs, write <code>compute()</code>, download.</p>
+        <ul>
+          <li><code>.ogn</code> node definitions and Python node classes</li>
+          <li><code>config/extension.toml</code> with the Python module declared</li>
+          <li>Execution pins, per-node state and examples (counter, branch)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h2>Why no build?</h2>
+        <p>Isaac Sim's OmniGraph finds <code>.ogn</code> files inside an extension's Python module folder and generates the
+          node code at startup. This tool writes exactly that layout, so there is no premake or <code>repo build</code> step.</p>
+        <p>Tested by loading generated nodes, including Action Graph runs, in Isaac Sim 5.0 and 6.1.</p>
+      </div>
+      <div class="card">
+        <h2>FAQ</h2>
+        <details><summary>How do I create a custom Action Graph node in Isaac Sim?</summary>
+          <p>Load an example here, edit inputs, outputs and code, download the zip, then add its parent folder under
+            Window &gt; Extensions &gt; Settings &gt; Extension Search Paths and enable it.</p></details>
+        <details><summary>Can I change the Python code later?</summary>
+          <p>Yes. Edit <code>Ogn&lt;Node&gt;.py</code>; Isaac Sim reloads it automatically. Open the folder here again to edit inputs and outputs with the GUI.</p></details>
+        <details><summary>Does it support C++ nodes?</summary>
+          <p>No. C++ nodes must be compiled with the Isaac Sim or Kit build tools. This tool is for Python nodes.</p></details>
+        <details><summary>Is my code uploaded anywhere?</summary>
+          <p>No. Everything runs in your browser.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <p>
+      Works with <strong>Isaac Sim 5.0 / 5.1 / 6.1 / 7.0 (alpha)</strong>, Python OmniGraph nodes, no build step.
+      Made by <a href="https://github.com/Hrithik-verma" rel="author">Hrithik Verma</a> &middot;
+      <a href="https://github.com/Hrithik-verma/isaac-sim-omnigraph-node-builder">Source on GitHub</a> &middot;
+      <a href="https://github.com/Hrithik-verma/isaac-sim-omnigraph-node-builder/issues">Report an issue</a>
+    </p>
+    <p class="fine">Community project, not affiliated with or endorsed by NVIDIA. Isaac Sim, Omniverse and OmniGraph are trademarks of NVIDIA Corporation.
+      Everything runs in your browser; nothing is uploaded.</p>
+  </footer>
+
+  <div class="toast-area" id="toasts" aria-live="polite"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/ini.min.js" defer></script>
+  <script type="module" src="assets/app.js"></script>
+</body>
+</html>
