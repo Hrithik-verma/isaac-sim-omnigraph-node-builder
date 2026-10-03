@@ -39,7 +39,7 @@ about it and never overwrites your code. Isaac Sim loads it directly: no premake
 | 7.0 (alpha) | 110.3 | 3.12 | Same Kit as 6.1 |
 
 "Tested" means generated nodes were loaded and run in headless Isaac Sim, including Action Graph execution and a
-ROS 2 publisher -> subscriber round trip (see [tests](#tests)). Python nodes only; C++ nodes always need a compiled build.
+ROS 2 publisher -> subscriber round trip. Python nodes only; C++ nodes always need a compiled build.
 
 ### ROS 2 nodes
 
@@ -102,14 +102,6 @@ python3 -m http.server 8000      # then open http://localhost:8000
 - `assets/app.js`: the user interface
 - `tests/generate.mjs`: generator, validation and import round-trip tests (Node.js 18+)
 - `tests/isaacsim_check.py`: loads generated nodes in Isaac Sim and runs them
-
-### Tests
-
-```bash
-node tests/generate.mjs /tmp/ogn_out
-conda activate isaacsim6            # any Isaac Sim pip environment
-python tests/isaacsim_check.py /tmp/ogn_out builder.test.nodes           # add --ros with the ROS 2 setup above
-```
 
 ## Contributing
 
